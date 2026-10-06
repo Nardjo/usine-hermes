@@ -115,6 +115,72 @@ EOF
   echo "wrote $CONFIG"
 }
 
+HERMES_REPO=https://github.com/NousResearch/hermes-agent
+# Upstream FHS layout when its installer runs as root without --dir.
+HERMES_DIR=/usr/local/lib/hermes-agent
+# Root's HERMES_HOME; the installer puts its managed uv in <home>/bin.
+ROOT_HERMES_HOME=/root/.hermes
+
+need_root() {
+  [[ $DRY_RUN == 1 || $EUID -eq 0 ]] || die "$1 must run as root (try: sudo usine-hermes $1)"
+}
+
+need_os() {
+  [[ $DRY_RUN == 1 ]] && return
+  local os
+  # shellcheck source=/dev/null
+  os=$( . "${USINE_OS_RELEASE:-/etc/os-release}" && echo "${ID:-} ${VERSION_ID:-}" ) || os=unknown
+  [[ $os == "ubuntu 24.04" || $os == "debian 12" ]] ||
+    die "unsupported OS ($os): only Ubuntu 24.04 and Debian 12 are supported"
+}
+
+# Install Hermes once, shared and read-only for profiles, at the pinned tag.
+bootstrap_hermes() {
+  local tag sha installer=/tmp/hermes-install.sh
+  tag=$(cfg hermes_version)
+  if [[ $DRY_RUN == 1 ]]; then
+    run git ls-remote "$HERMES_REPO" "refs/tags/$tag^{}" "refs/tags/$tag"
+    sha="<sha-of-$tag>"
+    echo "# skip installer if git -C $HERMES_DIR rev-parse HEAD is at $sha"
+  else
+    # Annotated tags list their commit as <tag>^{}; reverse sort puts it first.
+    sha=$(git ls-remote "$HERMES_REPO" "refs/tags/$tag^{}" "refs/tags/$tag" |
+      sort -rk2 | awk 'NR == 1 { print $1 }')
+    [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "cannot resolve Hermes tag $tag"
+  fi
+
+  if [[ $DRY_RUN == 0 && $(git -C "$HERMES_DIR" rev-parse HEAD 2>/dev/null) == "$sha" ]]; then
+    echo "Hermes $tag already installed ($sha), skipping installer"
+  else
+    [[ $DRY_RUN == 1 ]] || installer=$(mktemp)
+    run curl -fsSL -o "$installer" \
+      "https://raw.githubusercontent.com/NousResearch/hermes-agent/$tag/scripts/install.sh"
+    # No --dir: it would break the system layout (launcher in /usr/local/bin).
+    run env HERMES_HOME="$ROOT_HERMES_HOME" bash "$installer" \
+      --commit "$sha" --non-interactive --skip-browser --skip-computer-use
+    run rm -f "$installer"
+  fi
+
+  # Discord + Honcho client deps are lazy upstream (installed into the venv on
+  # first use); root pre-bakes them so profiles never write here. Locked, so a
+  # re-run changes nothing. Inferred from upstream's Dockerfile.
+  run env UV_PROJECT_ENVIRONMENT="$HERMES_DIR/venv" UV_PYTHON="$HERMES_DIR/venv/bin/python" \
+    "$ROOT_HERMES_HOME/bin/uv" sync --extra all --extra messaging --extra honcho --locked \
+    --project "$HERMES_DIR"
+  run chown -R root:root "$HERMES_DIR"
+  run chmod -R go-w "$HERMES_DIR"
+}
+
+cmd_bootstrap() {
+  need_root bootstrap
+  need_os
+  run apt-get update
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y git curl tar coreutils ca-certificates
+  bootstrap_hermes
+  # Docker + Honcho go here (issue #5), skipped when `honcho: false`.
+  echo "bootstrap done"
+}
+
 main() {
   # --dry-run is accepted anywhere on the command line.
   local args=() a
@@ -133,7 +199,8 @@ main() {
       ;;
     init) cmd_init ;;
     config) cfg "${1:?usage: usine-hermes config <key>}" ;;
-    bootstrap | list | doctor) die "$cmd: not implemented yet" ;;
+    bootstrap) cmd_bootstrap ;;
+    list | doctor) die "$cmd: not implemented yet" ;;
     *) die "unknown command: $cmd (see 'usine-hermes help')" 2 ;;
   esac
 }

@@ -86,6 +86,27 @@ expect "init rejects bad allowlist" 2 "allowlist" -- uc init <<<$'\n\n\nabc'
 expect "init rejects bad honcho" 2 "honcho" -- uc init <<<$'\n\n\n\nmaybe'
 expect "rejected init writes nothing" 1 "usine-hermes init" -- uc config home_root
 
+# bootstrap --dry-run: planned Hermes install, no root, no network.
+bs() { env USINE_CONFIG="$root/usine.example.yaml" "$cli" bootstrap --dry-run; }
+expect "bootstrap: apt prereqs" 0 "apt-get install -y .*git.*curl" -- bs
+expect "bootstrap: tag resolved via ls-remote" 0 \
+  "git ls-remote https://github.com/NousResearch/hermes-agent .*refs/tags/v2026\.9\.24" -- bs
+expect "bootstrap: installer fetched at the tag" 0 \
+  "raw\.githubusercontent\.com/NousResearch/hermes-agent/v2026\.9\.24/scripts/install\.sh" -- bs
+expect "bootstrap: installer pinned and non-interactive" 0 \
+  "--commit \\\\?<sha-of-v2026\.9\.24\\\\?> --non-interactive --skip-browser --skip-computer-use" -- bs
+if bs 2>&1 | grep -q -- "--dir"; then ko "bootstrap: no --dir"; else ok "bootstrap: no --dir"; fi
+expect "bootstrap: skip when at pinned sha" 0 \
+  "skip.*/usr/local/lib/hermes-agent.*at <sha-of-v2026\.9\.24>" -- bs
+expect "bootstrap: pre-bakes Discord + Honcho deps" 0 \
+  "uv sync --extra all --extra messaging --extra honcho --locked" -- bs
+expect "bootstrap: shared install root-owned" 0 "chown -R root:root /usr/local/lib/hermes-agent" -- bs
+expect "bootstrap: shared install not writable by others" 0 "chmod -R go-w /usr/local/lib/hermes-agent" -- bs
+if [[ $EUID -ne 0 ]]; then
+  expect "bootstrap: non-root refused" 1 "must run as root" -- \
+    env USINE_CONFIG="$root/usine.example.yaml" "$cli" bootstrap
+fi
+
 # Lint: every shell file must pass shellcheck.
 if command -v shellcheck >/dev/null; then
   expect "shellcheck clean" 0 "" -- shellcheck "$root/install.sh" "$root/bin/usine-hermes" "$root/tests/test.sh"
