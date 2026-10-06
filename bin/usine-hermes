@@ -107,18 +107,19 @@ cmd_init() {
     [[ $yn == [yY]* ]] || { echo "kept $CONFIG"; return; }
   fi
   local home_root hermes_version provider allow honcho peer
-  ask home_root "Home root for profiles" /var/lib/usine-hermes
+  echo "Machine settings. Press Enter to keep the [default]." >&2
+  ask home_root "Directory holding all agent profiles (a path, not a name)" /var/lib/usine-hermes
   check_value home_root "$home_root"
-  ask hermes_version "Pinned Hermes version" v2026.9.24
+  ask hermes_version "Hermes version to install" v2026.9.24
   check_value hermes_version "$hermes_version"
-  ask provider "Default provider ($PROVIDERS)" openrouter
+  ask provider "Default model provider ($PROVIDERS)" openrouter
   [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
-  ask allow "Discord allowlist (user ids, comma-separated)" ""
+  ask allow "Discord user ids allowed to talk to the agents, comma-separated (Discord: Developer Mode > Copy User ID)" ""
   allow=${allow// /}
   [[ $allow =~ ^([0-9]+(,[0-9]+)*)?$ ]] || die "invalid Discord allowlist: $allow" 2
-  ask honcho "Enable Honcho memory (true/false)" true
+  ask honcho "Enable Honcho memory for the agents (true/false)" true
   [[ $honcho == true || $honcho == false ]] || die "honcho must be true or false" 2
-  ask peer "Your peer name in Honcho" owner
+  ask peer "Your name, as the agents' memory will know you" owner
   check_value peer_name "$peer"
 
   run mkdir -p "$(dirname "$CONFIG")"
