@@ -36,10 +36,16 @@ Each profile is the default profile of its own Hermes home, so there is no profi
 ## Install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
+```
+
+Or from a clone (same result):
+
+```sh
 git clone https://github.com/Nardjo/usine-hermes && cd usine-hermes && sudo ./install.sh
 ```
 
-`install.sh` copies the CLI and templates, then offers to run `init` (writes the config) and `bootstrap` (installs Hermes, Docker and Honcho). Enter means yes. Both can be re-run safely; `bootstrap` skips the Hermes installer when the pinned commit is already there, and keeps the Honcho database password and OpenRouter key.
+Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it. It copies the CLI and templates, then offers to run `init` (writes the config) and `bootstrap` (installs Hermes, Docker and Honcho). Enter means yes. Both can be re-run safely; `bootstrap` skips the Hermes installer when the pinned commit is already there, and keeps the Honcho database password and OpenRouter key.
 
 ## Quickstart
 

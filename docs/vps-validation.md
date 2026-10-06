@@ -8,10 +8,10 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
 
 1. **Install**
    ```sh
-   git clone https://github.com/Nardjo/usine-hermes && cd usine-hermes && sudo ./install.sh
+   curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
    ```
    Answer `init` with your user id as allowlist, keep `honcho: true`. Let `bootstrap` run; paste the OpenRouter key when asked. Expect `Honcho healthy` and `bootstrap done`.
-2. **Idempotency**: `sudo usine-hermes bootstrap` again. Expect `Hermes ... already installed, skipping installer`, `Docker with compose already installed`, no key prompt, `bootstrap done`. Re-run `sudo ./install.sh` and answer `n`: no error.
+2. **Idempotency**: `sudo usine-hermes bootstrap` again. Expect `Hermes ... already installed, skipping installer`, `Docker with compose already installed`, no key prompt, `bootstrap done`. Re-run the install one-liner and answer `n`: no error.
 3. **Two profiles**
    ```sh
    sudo usine-hermes create alice --provider openrouter   # paste key + bot A token

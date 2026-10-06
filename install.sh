@@ -21,6 +21,20 @@ esac
 
 [[ $EUID -eq 0 ]] || die "must run as root (try: sudo ./install.sh)"
 
+# Piped install (curl ... | sudo bash [-s -- --ref REF]): no repo next to us,
+# so fetch the repo at REF and re-run its install.sh with the terminal as stdin.
+if [[ ! -f $src/bin/usine-hermes ]]; then
+  ref=main
+  [[ ${1:-} == --ref && -n ${2:-} ]] && ref=$2
+  [[ $ref =~ ^[A-Za-z0-9._/-]+$ ]] || die "invalid ref: $ref"
+  # ponytail: the extracted copy stays in /tmp until reboot; harmless, no secrets.
+  tmp=$(mktemp -d /tmp/usine-hermes.XXXXXX)
+  curl -fsSL "https://codeload.github.com/Nardjo/usine-hermes/tar.gz/$ref" |
+    tar -xz -C "$tmp" --strip-components=1 || die "cannot download usine-hermes at '$ref'"
+  if [[ -r /dev/tty ]]; then exec bash "$tmp/install.sh" </dev/tty; fi
+  exec bash "$tmp/install.sh"
+fi
+
 install -d -m 755 "$bin_dir" "$share_dir/templates"
 install -m 755 "$src/bin/usine-hermes" "$bin_dir/usine-hermes"
 shopt -s nullglob
