@@ -53,6 +53,39 @@ if [[ $EUID -ne 0 ]]; then
   done
 fi
 
+# init + config: USINE_CONFIG points at a non-root path.
+cfgf="$tmp/etc/usine.yaml"
+uc() { env USINE_CONFIG="$cfgf" "$cli" "$@"; }
+expect "config without file points to init" 1 "usine-hermes init" -- uc config home_root
+expect "init with defaults (empty input)" 0 "wrote" -- uc init </dev/null
+expect "config reads home_root default" 0 "^/var/lib/usine-hermes$" -- uc config home_root
+expect "config reads pinned hermes_version" 0 "^v2026\.9\.24$" -- uc config hermes_version
+expect "config reads default_provider" 0 "^openrouter$" -- uc config default_provider
+expect "config reads per-provider model" 0 "^z-ai/glm-5\.2$" -- uc config model_openrouter
+expect "config reads dashed provider model" 0 "^sonnet$" -- uc config model_claude_subscription_directsdk_experimental
+expect "config reads honcho default" 0 "^true$" -- uc config honcho
+expect "config reads honcho_url" 0 "^http://127\.0\.0\.1:8000$" -- uc config honcho_url
+expect "config unknown key fails" 1 "unknown config key" -- uc config nope
+if grep -qiE "key|token|secret|password" <(grep -v '^#' "$cfgf" | cut -d: -f1); then ko "config holds no secret keys"; else ok "config holds no secret keys"; fi
+keys() { grep -E '^[a-z_]+:' "$1" | cut -d: -f1 | sort; }
+if [[ "$(keys "$cfgf")" == "$(keys "$root/usine.example.yaml")" ]]; then ok "example has same keys as init"; else ko "example has same keys as init"; fi
+expect "config reads example via USINE_CONFIG" 0 "^gpt-6-sol$" -- \
+  env USINE_CONFIG="$root/usine.example.yaml" "$cli" config model_openai_api
+expect "existing config kept on 'n'" 0 "kept" -- uc init <<<"n"
+expect "kept config unchanged" 0 "^openrouter$" -- uc config default_provider
+expect "overwrite on 'y' with answers" 0 "wrote" -- uc init <<<$'y\n/srv/usine\n\nanthropic\n123, 456\nfalse\njordan'
+expect "answer home_root written" 0 "^/srv/usine$" -- uc config home_root
+expect "empty answer keeps default" 0 "^v2026\.9\.24$" -- uc config hermes_version
+expect "answer provider written" 0 "^anthropic$" -- uc config default_provider
+expect "allowlist normalised" 0 "^123,456$" -- uc config discord_allowed_users
+expect "answer honcho written" 0 "^false$" -- uc config honcho
+expect "answer peer_name written" 0 "^jordan$" -- uc config peer_name
+rm -f "$cfgf"
+expect "init rejects unknown provider" 2 "provider" -- uc init <<<$'\n\nnope'
+expect "init rejects bad allowlist" 2 "allowlist" -- uc init <<<$'\n\n\nabc'
+expect "init rejects bad honcho" 2 "honcho" -- uc init <<<$'\n\n\n\nmaybe'
+expect "rejected init writes nothing" 1 "usine-hermes init" -- uc config home_root
+
 # Lint: every shell file must pass shellcheck.
 if command -v shellcheck >/dev/null; then
   expect "shellcheck clean" 0 "" -- shellcheck "$root/install.sh" "$root/bin/usine-hermes" "$root/tests/test.sh"

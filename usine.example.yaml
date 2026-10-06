@@ -1,0 +1,32 @@
+# usine-hermes machine config: /etc/usine-hermes/usine.yaml (written by `usine-hermes init`).
+# Flat `key: value` lines only. Never put secrets here. USINE_CONFIG overrides the path.
+
+# Parent directory of every profile home (<home_root>/<name>).
+home_root: /var/lib/usine-hermes
+# Hermes Agent tag installed once, shared read-only by all profiles.
+hermes_version: v2026.9.24
+# Provider preselected by `create`: openrouter, anthropic,
+# claude-subscription-directsdk-experimental, openai-api, openai-codex,
+# xai, xai-oauth, gemini, deepseek.
+default_provider: openrouter
+
+# Default model per provider (key: model_<provider id with - as _>).
+model_openrouter: z-ai/glm-5.2
+model_anthropic: claude-sonnet-4-6
+model_claude_subscription_directsdk_experimental: sonnet
+model_openai_api: gpt-6-sol
+model_openai_codex: gpt-6-sol
+model_xai: grok-4.6
+model_xai_oauth: grok-4.6
+model_gemini: gemini-3.8-flash
+model_deepseek: deepseek-flash
+
+# Discord user ids allowed to talk to every agent, comma-separated.
+# Empty means nobody is allowed.
+discord_allowed_users:
+# Self-hosted Honcho memory (false skips Docker and Honcho in bootstrap).
+honcho: true
+# Your name as seen by Honcho in every profile's memory.
+peer_name: owner
+# Local Honcho API (bound to 127.0.0.1 only).
+honcho_url: http://127.0.0.1:8000

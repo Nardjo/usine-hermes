@@ -30,4 +30,13 @@ done
 [[ -f $src/usine.example.yaml ]] && install -m 644 "$src/usine.example.yaml" "$share_dir/"
 
 echo "Installed $bin_dir/usine-hermes and $share_dir."
-echo "Next: sudo usine-hermes init && sudo usine-hermes bootstrap"
+
+# Offer to chain into the first setup; Enter means yes.
+for step in init bootstrap; do
+  read -r -p "Run 'usine-hermes $step' now? [Y/n] " yn || yn=n
+  if [[ $yn == [nN]* ]]; then
+    echo "Next: sudo usine-hermes init && sudo usine-hermes bootstrap"
+    exit 0
+  fi
+  "$bin_dir/usine-hermes" "$step"
+done

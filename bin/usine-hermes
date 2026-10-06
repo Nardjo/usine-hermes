@@ -12,7 +12,8 @@ usage() {
 Usage: usine-hermes <command> [args] [--dry-run]
 
 Commands:
-  init                 write /etc/usine-hermes/usine.yaml
+  init                 write /etc/usine-hermes/usine.yaml ($USINE_CONFIG overrides)
+  config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
   create <name>        create an isolated profile (not started)
   start <name>         enable and start a profile
@@ -30,6 +31,10 @@ EOF
 }
 
 DRY_RUN=0
+CONFIG=${USINE_CONFIG:-/etc/usine-hermes/usine.yaml}
+
+# Hermes provider ids offered by create; model keys are model_<id with - as _>.
+PROVIDERS="openrouter anthropic claude-subscription-directsdk-experimental openai-api openai-codex xai xai-oauth gemini deepseek"
 
 # Run a command, or only print it (shell-quoted) under --dry-run.
 run() {
@@ -48,6 +53,68 @@ check_name() {
     die "invalid name '${1:-}': expected ^[a-z][a-z0-9-]{1,30}\$" 2
 }
 
+# Print one value of the flat key: value config (surrounding quotes stripped).
+cfg() {
+  [[ -r $CONFIG ]] || die "no config at $CONFIG (run: sudo usine-hermes init)"
+  awk -v k="$1" '
+    index($0, k ":") == 1 {
+      v = substr($0, length(k) + 2)
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+      print v; found = 1; exit
+    }
+    END { exit !found }' "$CONFIG" || die "unknown config key: $1"
+}
+
+# ask <var> <question> <default>: read one answer from stdin, Enter keeps default.
+ask() {
+  local answer=
+  printf '%s [%s]: ' "$2" "$3" >&2
+  read -r answer || true
+  printf -v "$1" '%s' "${answer:-$3}"
+}
+
+cmd_init() {
+  if [[ -e $CONFIG ]]; then
+    local yn
+    ask yn "$CONFIG exists. Overwrite?" n
+    [[ $yn == [yY]* ]] || { echo "kept $CONFIG"; return; }
+  fi
+  local home_root hermes_version provider allow honcho peer
+  ask home_root "Home root for profiles" /var/lib/usine-hermes
+  ask hermes_version "Pinned Hermes version" v2026.9.24
+  ask provider "Default provider ($PROVIDERS)" openrouter
+  [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
+  ask allow "Discord allowlist (user ids, comma-separated)" ""
+  allow=${allow// /}
+  [[ $allow =~ ^([0-9]+(,[0-9]+)*)?$ ]] || die "invalid Discord allowlist: $allow" 2
+  ask honcho "Enable Honcho memory (true/false)" true
+  [[ $honcho == true || $honcho == false ]] || die "honcho must be true or false" 2
+  ask peer "Your peer name in Honcho" owner
+
+  mkdir -p "$(dirname "$CONFIG")"
+  cat >"$CONFIG" <<EOF
+# usine-hermes machine config (no secrets). See usine.example.yaml.
+home_root: $home_root
+hermes_version: $hermes_version
+default_provider: $provider
+model_openrouter: z-ai/glm-5.2
+model_anthropic: claude-sonnet-4-6
+model_claude_subscription_directsdk_experimental: sonnet
+model_openai_api: gpt-6-sol
+model_openai_codex: gpt-6-sol
+model_xai: grok-4.6
+model_xai_oauth: grok-4.6
+model_gemini: gemini-3.8-flash
+model_deepseek: deepseek-flash
+discord_allowed_users: $allow
+honcho: $honcho
+peer_name: $peer
+honcho_url: http://127.0.0.1:8000
+EOF
+  echo "wrote $CONFIG"
+}
+
 main() {
   # --dry-run is accepted anywhere on the command line.
   local args=() a
@@ -64,7 +131,9 @@ main() {
       check_name "${1:-}"
       die "$cmd: not implemented yet"
       ;;
-    init | bootstrap | list | doctor) die "$cmd: not implemented yet" ;;
+    init) cmd_init ;;
+    config) cfg "${1:?usage: usine-hermes config <key>}" ;;
+    bootstrap | list | doctor) die "$cmd: not implemented yet" ;;
     *) die "unknown command: $cmd (see 'usine-hermes help')" 2 ;;
   esac
 }
