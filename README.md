@@ -45,6 +45,10 @@ sudo usine-hermes logs alice        # redacted journal
 sudo usine-hermes doctor            # checks everything, including isolation
 ```
 
+## With a coding agent
+
+[skills/usine-hermes/SKILL.md](skills/usine-hermes/SKILL.md) is an agent skill: a coding agent on the VPS (Claude Code, Codex...) asks you for the name, personality, mission and provider, runs `create` non-interactively, walks you through Discord, and hands you the `secret` commands to type yourself. The agent never sees a secret.
+
 ## Commands
 
 `--dry-run` is accepted anywhere: commands are printed instead of run, no root needed, no secret prompts.
@@ -54,7 +58,8 @@ sudo usine-hermes doctor            # checks everything, including isolation
 | `init` | Asks a few questions, writes `/etc/usine-hermes/usine.yaml` (asks before overwriting; with `--dry-run` only prints it). `USINE_CONFIG` overrides the path; the profile registry lives in a `profiles/` directory next to it. |
 | `config <key>` | Prints one config value. |
 | `bootstrap` | Installs prerequisites, Hermes at the pinned tag, pre-installs the Discord and Honcho deps into the shared venv, then (if `honcho: true`) Docker from Docker's apt repo and the Honcho stack. Waits up to 180 s for Honcho health. Asks once (hidden) for the OpenRouter key. |
-| `create <name> [--personality T] [--mission T] [--provider P]` | Creates the Linux user, home, `SOUL.md`, model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in. Does not start. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user. A name that is already managed (including a half-created profile) is refused with a pointer to `destroy`. Secrets prompts are hidden; Enter leaves them empty. |
+| `create <name> [--personality T] [--mission T] [--provider P]` | Creates the Linux user, home, `SOUL.md`, model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in. Does not start. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user. A name that is already managed (including a half-created profile) is refused with a pointer to `destroy`. Secrets prompts are hidden; Enter leaves them empty. With all three flags and stdin not a terminal (a script or a coding agent), it never prompts: secrets stay empty, subscription login is skipped, and it prints the exact `secret` commands to run next. |
+| `secret <name> <KEY>` | Asks (hidden) for one value and writes or replaces `KEY` in the profile's `.env` (mode `600`, owned by the profile). Never prints it. `KEY` is `DISCORD_BOT_TOKEN` or a provider key variable (table below); managed profiles only; an empty value changes nothing. Says to `restart` if the profile is running. |
 | `start <name>` | `systemctl enable --now`. Refuses if `DISCORD_BOT_TOKEN` is empty or used by another profile. |
 | `stop <name>` / `restart <name>` | systemctl stop / restart. |
 | `status <name>` | Redacted `systemctl status` plus `token=set|empty|unknown`. |
@@ -72,7 +77,7 @@ sudo usine-hermes doctor            # checks everything, including isolation
    `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=309237763136`
    (scopes `bot applications.commands`, permissions `309237763136`).
 5. Get your own user id for the allowlist: Discord **Settings > Advanced > Developer Mode** on, then right-click your name > **Copy User ID**. Put it in `discord_allowed_users` (at `init`, or edit the config; affects profiles created afterwards).
-6. Paste the token when `create` asks for `DISCORD_BOT_TOKEN`, or later edit `<home_root>/<name>/.hermes/.env` (`DISCORD_BOT_TOKEN=...`).
+6. Paste the token when `create` asks for `DISCORD_BOT_TOKEN`, or later run `sudo usine-hermes secret <name> DISCORD_BOT_TOKEN`.
 7. `sudo usine-hermes start <name>`. Mention the bot in a channel; it only answers allowlisted users and only when mentioned (`DISCORD_REQUIRE_MENTION=true`).
 
 Never reuse a token across profiles: two gateways on one bot fight each other (`start` refuses it).
@@ -125,7 +130,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 bash tests/test.sh
 ```
 
-Dependency-free, no root, no VPS: covers name validation, `init`, `install.sh` OS/root refusal, `--dry-run` of `bootstrap` and `create`, the profile lifecycle and `doctor` against stubbed system commands, and `shellcheck` on every shell file. On macOS use a bash 5 (`/opt/homebrew/bin/bash tests/test.sh`). What needs a real VPS is in [docs/vps-validation.md](docs/vps-validation.md).
+Dependency-free, no root, no VPS: covers name validation, `init`, `install.sh` OS/root refusal, `--dry-run` of `bootstrap` and `create`, `secret`, the profile lifecycle and `doctor` against stubbed system commands, and `shellcheck` on every shell file. On macOS use a bash 5 (`/opt/homebrew/bin/bash tests/test.sh`). What needs a real VPS is in [docs/vps-validation.md](docs/vps-validation.md).
 
 ## License
 
