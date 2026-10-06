@@ -166,6 +166,8 @@ expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provi
 # Subscription providers: warning, y/N login as the profile user, or a follow-up command.
 sub() { cr ab --personality p --mission m --provider "$@"; }
 claude="claude-subscription-directsdk-experimental"
+# Missing --mission keeps it interactive: Enter for the mission, then the login answer.
+subi() { cr ab --personality p --provider "$@"; }
 expect "sub: claude warns experimental" 0 "1\.7x" -- sub $claude
 expect "sub: codex warns quota" 0 "quota" -- sub openai-codex
 expect "sub: supergrok warns 403" 0 "403" -- sub xai-oauth
@@ -174,15 +176,22 @@ expect "sub: claude model from config" 0 "hermes config set model\.default sonne
 expect "sub: claude CLI installed as profile" 0 "runuser -u ab -- .*claude\.ai/install\.sh" -- sub $claude
 expect "sub: plugin installed as profile" 0 \
   "runuser -u ab -- .*hermes plugins install claude-subscription-directsdk" -- sub $claude
-expect "sub: claude login as profile on y" 0 "^\+ runuser -u ab -- .*HOME=/var/lib/usine-hermes/ab .*claude auth login" -- sub $claude <<<"y"
-expect "sub: codex login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex <<<"y"
-expect "sub: supergrok login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add xai-oauth" -- sub xai-oauth <<<"y"
+expect "sub: claude login as profile on y" 0 "^\+ runuser -u ab -- .*HOME=/var/lib/usine-hermes/ab .*claude auth login" -- subi $claude <<<$'\ny'
+expect "sub: codex login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add openai-codex" -- subi openai-codex <<<$'\ny'
+expect "sub: supergrok login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add xai-oauth" -- subi xai-oauth <<<$'\ny'
 expect "sub: skip prints follow-up command" 0 "later.*" -- sub openai-codex
 expect "sub: follow-up is the login as profile" 0 "^ *sudo runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex
 if sub openai-codex 2>&1 | grep -c >/dev/null "^+ .*auth add"; then ko "sub: skip runs no login"; else ok "sub: skip runs no login"; fi
 if sub $claude 2>&1 | grep -cE >/dev/null "_API_KEY"; then ko "sub: no API key asked or written"; else ok "sub: no API key asked or written"; fi
 expect "sub: menu offers subscriptions" 0 "openai-codex" -- cr ab --personality p --mission m <<<"5"
 expect "sub: unit PATH finds the profile's claude CLI" 0 "^\| Environment=PATH=/var/lib/usine-hermes/ab/\.local/bin:" -- sub $claude
+# All flags + stdin not a TTY (tests run on /dev/null): no prompt at all.
+if crf 2>&1 | grep -cE >/dev/null "would ask|\[.*\]: "; then ko "create: all flags, no TTY: no prompt"; else ok "create: all flags, no TTY: no prompt"; fi
+if sub openai-codex 2>&1 | grep -c >/dev/null "Log in now"; then ko "create: no TTY: no login prompt"; else ok "create: no TTY: no login prompt"; fi
+expect "create: next step sets the API key" 0 "sudo usine-hermes secret ab ANTHROPIC_API_KEY" -- crf
+expect "create: next step sets the Discord token" 0 "sudo usine-hermes secret ab DISCORD_BOT_TOKEN" -- crf
+if sub openai-codex 2>&1 | grep -c >/dev/null "secret ab .*_API_KEY"; then ko "create: no key step for subscriptions"; else ok "create: no key step for subscriptions"; fi
+expect "create: missing flag still asks secrets" 0 "would ask \(hidden\)" -- cr ab --provider anthropic
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
 expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
 if [[ $EUID -ne 0 ]]; then
@@ -249,6 +258,24 @@ expect "destroy: removes marker last" 0 "rm -f $tmp/profiles/delta"$'\n'"destroy
 if [[ -f $tmp/profiles/delta ]]; then ok "destroy: dry-run keeps files"; else ko "destroy: dry-run keeps files"; fi
 if [[ $EUID -ne 0 ]]; then
   expect "destroy: non-root refused" 1 "must run as root" -- lc destroy delta <<<delta
+fi
+
+# secret: hidden prompt, one allowed key per call, managed profiles only.
+expect "secret: unknown key refused" 2 "unknown key" -- lc secret delta PATH --dry-run <<<x
+expect "secret: unmanaged profile refused" 1 "not a managed profile" -- lc secret stranger DISCORD_BOT_TOKEN --dry-run <<<x
+expect "secret: name checked" 2 "invalid name" -- lc secret Bad DISCORD_BOT_TOKEN --dry-run <<<x
+sec() { lc secret "$1" "$2" --dry-run <<<"$3"; }
+expect "secret: hidden prompt names key and profile" 0 "DISCORD_BOT_TOKEN for delta \(hidden" -- sec delta DISCORD_BOT_TOKEN new.token.123456
+expect "secret: .env rewritten 600 owned by profile" 0 \
+  "write $hr/delta/\.hermes/\.env \(mode 600, owner delta:delta\)" -- sec delta DISCORD_BOT_TOKEN new.token.123456
+expect "secret: replaces an existing key" 0 "^# \.env keys: OPENROUTER_API_KEY DISCORD_BOT_TOKEN$" -- sec delta DISCORD_BOT_TOKEN new.token.123456
+expect "secret: appends a missing key" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY XAI_API_KEY$" -- sec alpha XAI_API_KEY xai-new-secret
+if sec delta OPENROUTER_API_KEY sk-or-new-secret 2>&1 | grep -cE >/dev/null "sk-or-|tok\.delta"; then ko "secret: values never printed"; else ok "secret: values never printed"; fi
+expect "secret: empty value refused" 1 "empty" -- sec delta DISCORD_BOT_TOKEN ""
+expect "secret: restart hint when active" 0 "usine-hermes restart delta" -- sec delta DISCORD_BOT_TOKEN new.token.123456
+if grep -q "^DISCORD_BOT_TOKEN=tok.delta" "$hr/delta/.hermes/.env"; then ok "secret: dry-run writes nothing"; else ko "secret: dry-run writes nothing"; fi
+if [[ $EUID -ne 0 ]]; then
+  expect "secret: non-root refused" 1 "must run as root" -- lc secret delta DISCORD_BOT_TOKEN <<<x
 fi
 
 # doctor: runuser/stat/git/curl stubbed; STUB_* vars inject failures.

@@ -17,6 +17,7 @@ Commands:
   bootstrap            install Hermes, Docker and Honcho (idempotent)
   create <name> [--personality T] [--mission T] [--provider P]
                        create an isolated profile (not started)
+  secret <name> <KEY>  set one secret in the profile .env (hidden prompt)
   start <name>         enable and start a profile
   stop <name>          stop a profile
   restart <name>       restart a profile
@@ -455,6 +456,10 @@ cmd_create() {
     die "$name is already managed (maybe a failed create); to recreate it run: usine-hermes destroy $name"
   ! id -u "$name" >/dev/null 2>&1 || die "refusing: $name is an existing non-managed Linux user"
 
+  # All flags and no TTY (a coding agent, a script): never prompt, secrets
+  # stay empty and are set afterwards with `usine-hermes secret`.
+  local batch=0
+  [[ -n $personality && -n $mission && -n $provider && ! -t 0 ]] && batch=1
   [[ -n $provider ]] || choose_provider provider
   [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
   local key_name login=n
@@ -464,12 +469,13 @@ cmd_create() {
   if [[ -z $key_name ]]; then
     sub_warning "$provider" >&2
     echo "The login runs as Linux user $name; its tokens stay in $home." >&2
-    ask login "Log in now?" n
+    [[ $batch == 1 ]] || ask login "Log in now?" n
   fi
 
   # Secrets first so a cancelled prompt leaves nothing half-created.
   local key="" token=""
-  if [[ $DRY_RUN == 1 ]]; then
+  if [[ $batch == 1 ]]; then :
+  elif [[ $DRY_RUN == 1 ]]; then
     echo "# would ask (hidden) for ${key_name:+$key_name and }DISCORD_BOT_TOKEN"
   else
     [[ -z $key_name ]] || secret key "$key_name"
@@ -523,7 +529,11 @@ cmd_create() {
     echo "Login skipped. Run it later as root:"
     DRY_RUN=1 sub_login "$name" "$provider" | sed 's/^+ /  sudo /'
   fi
-  echo "created $name (not started). Fill empty secrets in $hermes_home/.env, then: usine-hermes start $name"
+  echo "created $name (not started). Next steps:"
+  [[ -n $key_name && -z $key ]] && echo "  sudo usine-hermes secret $name $key_name"
+  [[ -n $token ]] || echo "  sudo usine-hermes secret $name DISCORD_BOT_TOKEN"
+  echo "  sudo usine-hermes start $name"
+  echo "  sudo usine-hermes doctor $name"
 }
 
 cmd_start() {
@@ -552,6 +562,37 @@ redact() {
     sed -E -e 's/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD|token|key|secret|password)[":= ]+)[^ ",]+/\1[REDACTED]/g' \
       -e 's/(Bearer|Bot) [A-Za-z0-9._-]{16,}/\1 [REDACTED]/g' \
       -e 's/[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}/[REDACTED]/g'
+}
+
+# Keys `secret` may set: the Discord token and every provider API key.
+secret_keys() {
+  local p
+  echo DISCORD_BOT_TOKEN
+  for p in $PROVIDERS; do key_var "$p"; done
+}
+
+cmd_secret() {
+  local name=$1 key=${2:-}
+  grep -qxF -- "$key" <(secret_keys) ||
+    die "unknown key: '$key' (allowed: $(secret_keys | tr '\n' ' '))" 2
+  need_root secret
+  need_managed "$name"
+  local env value old new
+  env=$(env_file "$name")
+  secret value "$key for $name"
+  [[ -n $value ]] || die "empty value, $key unchanged"
+  # Read as the profile: a planted link cannot make root copy another file.
+  if [[ $DRY_RUN == 1 ]]; then old=$(cat "$env" 2>/dev/null) || old=
+  else old=$(runuser -u "$name" -- cat "$env" 2>/dev/null) || old=; fi
+  # Replace or append; printf and here-strings keep the value off any argv.
+  new=$(grep -v "^$key=" <<<"$old" | grep -v "^\$" || true)
+  printf -v new '%s\n%s=%s' "$new" "$key" "$value"
+  new=${new#$'\n'}
+  [[ $DRY_RUN == 0 ]] || echo "# .env keys: $(cut -d= -f1 <<<"$new" | paste -sd' ' -)"
+  printf '%s\n' "$new" | write_file 600 "$name:$name" "$env" secret
+  echo "$key set for $name"
+  ! systemctl is-active "$(unit_of "$name")" >/dev/null 2>&1 ||
+    echo "$name is running: apply with sudo usine-hermes restart $name"
 }
 
 cmd_status() {
@@ -671,8 +712,8 @@ main() {
   shift || true
   case $cmd in
     help | -h | --help) usage ;;
-    create | start | stop | restart | status | logs | destroy) check_name "${1:-}" ;;&
-    create | start | stop | restart | status | logs | destroy | list | config | bootstrap | doctor)
+    create | start | stop | restart | status | logs | destroy | secret) check_name "${1:-}" ;;&
+    create | start | stop | restart | status | logs | destroy | secret | list | config | bootstrap | doctor)
       check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
@@ -682,6 +723,7 @@ main() {
       run systemctl "$cmd" "$(unit_of "$1")"
       ;;
     status) cmd_status "$1" ;;
+    secret) cmd_secret "$@" ;;
     logs) cmd_logs "$@" ;;
     list) cmd_list ;;
     init) cmd_init ;;
