@@ -174,13 +174,90 @@ bootstrap_hermes() {
   run install -m 755 "$ROOT_HERMES_HOME/bin/uv" /usr/local/bin/uv
 }
 
+HONCHO_DIR=/opt/usine-hermes/honcho
+
+# Docker from Docker's official apt repo (compose v2.24+ needed by Honcho).
+bootstrap_docker() {
+  if [[ $DRY_RUN == 0 ]] && docker compose version >/dev/null 2>&1; then
+    echo "Docker with compose already installed"
+  else
+    local id="<os-id>" codename="<codename>" arch="<arch>"
+    if [[ $DRY_RUN == 0 ]]; then
+      # shellcheck source=/dev/null
+      read -r id codename < <(. "${USINE_OS_RELEASE:-/etc/os-release}" && echo "$ID $VERSION_CODENAME")
+      arch=$(dpkg --print-architecture)
+    fi
+    run install -m 755 -d /etc/apt/keyrings
+    run curl -fsSL -o /etc/apt/keyrings/docker.asc "https://download.docker.com/linux/$id/gpg"
+    run chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$id $codename stable" |
+      write_file 644 root:root /etc/apt/sources.list.d/docker.list
+    run apt-get update
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  fi
+  run systemctl enable --now docker
+}
+
+# Honcho stack in $HONCHO_DIR. Its .env keeps the DB password and the
+# OpenRouter key across re-runs, so the key is asked only once.
+bootstrap_honcho() {
+  local envf=$HONCHO_DIR/.env pw="" key="" m=openai/gpt-5.4-mini l url i
+  if [[ -r $envf ]]; then
+    pw=$(awk 'index($0, "POSTGRES_PASSWORD=") == 1 { print substr($0, 19) }' "$envf")
+    key=$(awk 'index($0, "LLM_OPENAI_API_KEY=") == 1 { print substr($0, 20) }' "$envf")
+  fi
+  # Hex: safe inside the connection URI without encoding.
+  [[ -n $pw ]] || pw=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+  if [[ -z $key ]]; then
+    if [[ $DRY_RUN == 1 ]]; then
+      echo "# would ask (hidden) for the OpenRouter key used by Honcho"
+    else
+      secret key "OpenRouter API key for Honcho"
+      [[ -n $key ]] || die "Honcho needs an OpenRouter key (or set honcho: false)"
+    fi
+  fi
+
+  run install -d -m 700 "$HONCHO_DIR"
+  run install -m 644 "$TEMPLATES/honcho-compose.yml" "$HONCHO_DIR/docker-compose.yml"
+  echo 'CREATE EXTENSION IF NOT EXISTS vector;' | write_file 644 root:root "$HONCHO_DIR/init.sql"
+  # printf is a builtin: secrets never reach a process argv.
+  {
+    printf 'POSTGRES_PASSWORD=%s\nAUTH_USE_AUTH=false\n' "$pw"
+    printf 'LLM_OPENAI_API_KEY=%s\nLLM_OPENAI_BASE_URL=https://openrouter.ai/api/v1\n' "$key"
+    printf '%s=%s\n' DERIVER_MODEL_CONFIG__MODEL "$m" SUMMARY_MODEL_CONFIG__MODEL "$m" \
+      DREAM_DEDUCTION_MODEL_CONFIG__MODEL "$m" DREAM_INDUCTION_MODEL_CONFIG__MODEL "$m"
+    for l in minimal low medium high max; do
+      printf 'DIALECTIC_LEVELS__%s__MODEL_CONFIG__MODEL=%s\n' "$l" "$m"
+    done
+    printf 'EMBEDDING_MODEL_CONFIG__MODEL=openai/text-embedding-3-small\n'
+    printf 'EMBEDDING_MODEL_CONFIG__TRANSPORT=openai\n'
+    printf 'EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=https://openrouter.ai/api/v1\n'
+  } | write_file 600 root:root "$envf" secret
+  run docker compose -f "$HONCHO_DIR/docker-compose.yml" up -d
+
+  url=$(cfg honcho_url)/health
+  if [[ $DRY_RUN == 1 ]]; then
+    echo "# wait up to 180s for: curl -fsS $url"
+    return
+  fi
+  for ((i = 0; i < 90; i++)); do
+    curl -fsS "$url" >/dev/null 2>&1 && { echo "Honcho healthy"; return; }
+    sleep 2
+  done
+  die "Honcho not healthy after 180s (see: docker compose -f $HONCHO_DIR/docker-compose.yml logs)"
+}
+
 cmd_bootstrap() {
   need_root bootstrap
   need_os
   run apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y git curl tar coreutils ca-certificates
   bootstrap_hermes
-  # Docker + Honcho go here (issue #5), skipped when `honcho: false`.
+  if [[ $(cfg honcho) == true ]]; then
+    bootstrap_docker
+    bootstrap_honcho
+  fi
   echo "bootstrap done"
 }
 
@@ -330,7 +407,16 @@ cmd_create() {
 
   as_profile "$name" hermes config set model.provider "$provider"
   as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
-  # Honcho memory wiring (issue #5) goes here.
+  if [[ $(cfg honcho) == true ]]; then
+    local url
+    url=$(cfg honcho_url)
+    # Get-or-create: safe to repeat.
+    run curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
+      -d "{\"id\":\"$name\"}" "$url/v3/workspaces"
+    printf '{\n  "baseUrl": "%s",\n  "hosts": {\n    "hermes": {\n      "enabled": true,\n      "workspace": "%s",\n      "aiPeer": "%s",\n      "peerName": "%s"\n    }\n  }\n}\n' \
+      "$url" "$name" "$name" "$(cfg peer_name)" | write_file 600 "$name:$name" "$hh/honcho.json"
+    as_profile "$name" hermes config set memory.provider honcho
+  fi
 
   # printf is a builtin: secrets never reach a process argv.
   printf '%s=%s\nDISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
