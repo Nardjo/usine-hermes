@@ -27,7 +27,14 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
 8. **Reboot**: `sudo reboot`, then `list` (both active), `doctor` green, both bots answer.
 9. **Exposure**: `sudo ss -tlnp`: Honcho only on `127.0.0.1:8000`; no Postgres (5432) or Redis (6379) listener on any interface.
 10. **Destroy**: `sudo usine-hermes destroy bob` (type `bob`). Then `id bob` and `getent group bob` fail, `/var/lib/usine-hermes/bob`, `/etc/usine-hermes/profiles/bob` and `/etc/systemd/system/usine-bob.service*` are gone, `list` and `doctor` show only alice.
-11. Optional: a third profile with a subscription provider (`claude-subscription-directsdk-experimental`, `openai-codex` or `xai-oauth`), login at `create`, start, answer on Discord.
+11. **Vulcain**
+    ```sh
+    sudo usine-hermes create vulcain --preset vulcain --provider openrouter
+    sudo usine-hermes secret vulcain DISCORD_BOT_TOKEN && sudo usine-hermes secret vulcain OPENROUTER_API_KEY
+    sudo usine-hermes start vulcain
+    ```
+    On Discord ask it to create `carol` (openrouter). Expect: it repeats the values and waits for your yes, then gives you the Discord steps and the `secret` + `start` commands, and never asks for a token. `list` shows `carol inactive token=empty`. Run the `secret` commands yourself, then ask Vulcain to start `carol`: it answers on Discord. Ask Vulcain to destroy or stop `carol`, to set a secret, and to restart itself: each refused. `sudo usine-hermes doctor`: all `ok`, including `vulcain cannot-read-carol` and `carol cannot-read-vulcain`.
+12. Optional: a third profile with a subscription provider (`claude-subscription-directsdk-experimental`, `openai-codex` or `xai-oauth`), login at `create`, start, answer on Discord.
 
 ## Checklist of unverified assumptions
 
@@ -73,3 +80,14 @@ Tick each one on the VPS; open an issue for any failure.
 - [ ] `stat -c` owners/modes are as expected (home `700`, `.env` `600`, owned by the profile)
 - [ ] `userdel` removes the profile group
 - [ ] `destroy` cleans a half-created profile (no unit yet)
+
+### Vulcain preset
+- [ ] `sudo -n /usr/local/bin/usine-hermes bridge list` works inside Vulcain's sandbox (`NoNewPrivileges=no`, `ProtectSystem=strict`): sudo runs with a read-only `/run`, and `systemd-run` reaches PID 1 over its socket
+- [ ] The bridge command runs from Discord with no approval prompt (pre-approved by `command_allowlist`), while another risky command (for example `rm -rf ~/x`) still asks for approval on Discord
+- [ ] Hermes does not ask for a sudo password (no sudo prompt in the gateway; `sudo -n` fails fast otherwise)
+- [ ] Vulcain's skill shows up in Hermes (ask Vulcain which skills it has)
+- [ ] `hermes config set command_allowlist '[...]'` stores a list in Vulcain's `config.yaml`
+- [ ] `systemd-run --wait --pipe` returns the inner exit code and output (a refused `start` of an empty token shows its error on Discord)
+- [ ] `journalctl -t usine-hermes-bridge` shows one `caller=vulcain action=... target=...` line per call
+- [ ] `max_profiles` reached: the bridge refuses `create`; the human's `create` still works
+- [ ] `sudo -u vulcain sudo -n /bin/true` is refused (the rule allows the bridge only); `destroy vulcain` removes `/etc/sudoers.d/usine-hermes-vulcain`

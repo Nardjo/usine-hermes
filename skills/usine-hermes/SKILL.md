@@ -1,36 +1,61 @@
 ---
 name: usine-hermes
-description: Add a Hermes Discord bot (profile) on a VPS running usine-hermes, with the human typing every secret. Use when the user says "add an agent", "new bot", "create a Hermes profile", "usine-hermes create", or wants another Discord bot on their usine-hermes VPS.
+description: "Vulcain: create a new Hermes Discord bot (profile) on this usine-hermes farm, and check or restart the farm's bots. The human sets every secret."
+version: 1.0.0
+author: usine-hermes
+license: MIT
+platforms: [linux]
+metadata:
+  hermes:
+    tags: [usine-hermes, operator, Discord, farm]
 ---
 
-# usine-hermes: add a profile
+# usine-hermes: run the farm from Discord
 
-You drive `usine-hermes` on the VPS; the human types every secret. See the repo `README.md` for details.
+You are the farm operator. Every farm action is one command, run through the root bridge:
+
+```sh
+sudo -n /usr/local/bin/usine-hermes bridge <action> [args]
+```
+
+Type it exactly like that: one command, no `;`, `&&`, `|`, `$(...)` or redirections, and text in single quotes. Anything else is not pre-approved and will wait for a human approval or be refused.
+
+| Action | Use |
+|---|---|
+| `list` | every profile, its state and `token=set/empty` |
+| `status <name>` / `logs <name> [-n N]` | state and redacted journal (N up to 1000) |
+| `doctor [name]` | full health and isolation check |
+| `restart <name>` / `start <name>` | `start` refuses an empty or reused Discord token |
+| `create <name> --personality '<text>' --mission '<text>' --provider <id>` | new profile, never started |
+
+You cannot `destroy`, `stop`, set secrets, or `restart`/`start`/`create` your own profile. When the human wants one of those, give them the `sudo usine-hermes ...` command to run in their own terminal. The bridge also caps the number of profiles (`max_profiles`); when it says the cap is reached, tell the human.
 
 ## Hard rule: secrets
 
-Never ask for, read, print, grep, cat or relay a secret (Discord token, API keys, `.env`, `auth.json`, `/opt/usine-hermes/honcho/.env`). Never run `secret`, `create` without `</dev/null`, or a subscription login yourself: those are prompts for the human. If the human pastes a secret in chat, tell them to reset it (Discord **Reset Token**, or rotate the key) and set the new one with `secret`.
+Never ask for, read, print or relay a Discord token, an API key, a `.env` or `auth.json`. The human types them in their own terminal with `usine-hermes secret`. If a secret is pasted in chat, tell the human to reset it (Discord **Reset Token**, or rotate the key) and set the new one with `secret`.
 
-## Steps
+## Create a profile
 
-1. Check the setup: `sudo usine-hermes list` works (else the human runs `sudo ./install.sh` first). `sudo usine-hermes config default_provider` gives the default.
-2. Ask the human for: **name** (`^[a-z][a-z0-9-]{1,30}$`, not an existing Linux user), **personality**, **mission**, **provider** (one of: `openrouter anthropic claude-subscription-directsdk-experimental openai-api openai-codex xai xai-oauth gemini deepseek`; README "Providers" lists auth and limits).
-3. Create it without prompts (all three flags, stdin not a terminal):
-   ```sh
-   sudo usine-hermes create <name> --personality "<text>" --mission "<text>" --provider <provider> </dev/null
-   ```
-   Keep the "Next steps" it prints: they are the exact `secret` commands, and for a subscription provider the login command.
-4. Discord: walk the human through README "Discord setup" steps 1 to 5 (new application, bot token, **Message Content** + **Server Members** intents, invite URL with their Application ID, their user id in `discord_allowed_users`). You may build the invite URL from the Application ID they give you (it is not secret).
-5. Hand the human the commands from step 3 to run in their own terminal, for example:
+1. Gather, in the conversation:
+   - **name**: `^[a-z][a-z0-9-]{1,30}$`, not already in `list`;
+   - **personality** (max 200 characters) and **mission** (max 500), one line each (single quotes around them; if the text has an apostrophe, double quotes and no `$`, backtick or backslash);
+   - **provider**: `openrouter anthropic claude-subscription-directsdk-experimental openai-api openai-codex xai xai-oauth gemini deepseek` (API key for the plain ids, a subscription login for `claude-subscription-...`, `openai-codex`, `xai-oauth`).
+2. Repeat the four values and wait for an explicit yes.
+3. Run `create`. Keep the "Next steps" it prints.
+4. Discord bot, step by step for the human:
+   1. <https://discord.com/developers/applications>, **New Application**, named after the profile.
+   2. **Bot** tab: **Reset Token** and keep it (never paste it here).
+   3. Same tab: enable **Message Content Intent** and **Server Members Intent**, save.
+   4. Ask for the **Application ID** (General Information, not secret) and give back the invite link: `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=309237763136`
+5. Give the human the exact commands to run on the VPS, from "Next steps":
    ```sh
    sudo usine-hermes secret <name> DISCORD_BOT_TOKEN
-   sudo usine-hermes secret <name> <PROVIDER_KEY_VAR>
+   sudo usine-hermes secret <name> <PROVIDER_KEY_VAR>   # API key providers only
    ```
-   Subscription providers: give them the printed login command instead of a key. Wait until they say done.
-6. Start and check:
-   ```sh
-   sudo usine-hermes start <name>
-   sudo usine-hermes doctor <name>
-   ```
-   On a `token` FAIL or "DISCORD_BOT_TOKEN is empty", go back to step 5. Read failures with `sudo usine-hermes logs <name>` (redacted).
-7. Ask the human to mention the bot in a channel and confirm it answers. No answer: check intents, the invite, and that their user id is in `discord_allowed_users`.
+   For a subscription provider, give the printed login command instead of the key line. The profile cannot run before this: it is the human's approval.
+6. When they say done: `start <name>`, then `doctor <name>`. On `token FAIL` or "DISCORD_BOT_TOKEN is empty", go back to step 5. Otherwise read `logs <name>`.
+7. Ask the human to mention the new bot in a channel. No answer: check the intents, the invite, and that their Discord user id is in `discord_allowed_users`.
+
+## Keep the farm running
+
+When a bot is silent or the human asks for a check: `list`, then `status` and `logs` of the profile, then `doctor`. `restart` a crashed profile once; if it fails again, report the redacted log lines instead of retrying.
