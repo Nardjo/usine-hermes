@@ -156,8 +156,12 @@ mkprof delta "tok.delta.0987654321" "sk-or-delta-secret"
 mkdir -p "$hr/stranger" "$tmp/stub"
 cat >"$tmp/stub/systemctl" <<'EOF'
 #!/bin/sh
-[ "$1" = is-active ] || echo "systemctl $*"
-echo active
+case "$1 $*" in
+  is-active*) echo active ;;
+  *LoadState*) echo loaded ;;
+  *DropInPaths*) echo "/etc/systemd/system/$2.d/isolate.conf" ;;
+  *) echo "systemctl $*"; echo active ;;
+esac
 EOF
 cat >"$tmp/stub/journalctl" <<'EOF'
 #!/bin/sh
@@ -181,6 +185,72 @@ if lc logs delta 2>&1 | grep -qE "tok\.delta|sk-or-delta|abcdefghijklmnop"; then
 if [[ $EUID -ne 0 ]]; then
   expect "start: non-root refused" 1 "must run as root" -- lc start delta
 fi
+# destroy: typed-name confirmation, managed profiles only.
+expect "destroy: unmanaged profile refused" 1 "not a managed profile" -- lc destroy stranger --dry-run <<<stranger
+expect "destroy: wrong typed name aborts" 1 "aborted" -- lc destroy delta --dry-run <<<beta
+expect "destroy: no typed name aborts" 1 "aborted" -- lc destroy delta --dry-run </dev/null
+expect "destroy: asks to type the name" 0 "Type delta" -- lc destroy delta --dry-run <<<delta
+expect "destroy: stops and disables unit" 0 "systemctl disable --now usine-delta\.service" -- lc destroy delta --dry-run <<<delta
+expect "destroy: removes unit" 0 "rm -f /etc/systemd/system/usine-delta\.service$" -- lc destroy delta --dry-run <<<delta
+expect "destroy: removes drop-in dir" 0 "rm -rf /etc/systemd/system/usine-delta\.service\.d" -- lc destroy delta --dry-run <<<delta
+expect "destroy: daemon-reload" 0 "systemctl daemon-reload" -- lc destroy delta --dry-run <<<delta
+expect "destroy: removes user" 0 "userdel delta" -- lc destroy delta --dry-run <<<delta
+expect "destroy: removes home" 0 "rm -rf $hr/delta$" -- lc destroy delta --dry-run <<<delta
+if [[ -f $hr/delta/.usine-hermes ]]; then ok "destroy: dry-run keeps files"; else ko "destroy: dry-run keeps files"; fi
+if [[ $EUID -ne 0 ]]; then
+  expect "destroy: non-root refused" 1 "must run as root" -- lc destroy delta <<<delta
+fi
+
+# doctor: runuser/stat/git/curl stubbed; STUB_* vars inject failures.
+cat >"$tmp/stub/runuser" <<'EOF'
+#!/bin/sh
+# runuser -u A -- test -r PATH: A reads its own home, or a home in STUB_LEAK.
+u=$2; f=$6
+case "$f" in "$STUB_HR/$u/"*) exit 0 ;; esac
+[ -n "${STUB_LEAK:-}" ] && case "$f" in "$STUB_HR/$STUB_LEAK/"*) exit 0 ;; esac
+exit 1
+EOF
+cat >"$tmp/stub/stat" <<'EOF'
+#!/bin/sh
+f=$3; u=${f#"$STUB_HR/"}; u=${u%%/*}
+case "$f" in
+  */.env) echo "$u:$u ${STUB_ENV_MODE:-600}" ;;
+  *) echo "$u:$u 700" ;;
+esac
+EOF
+cat >"$tmp/stub/git" <<'EOF'
+#!/bin/sh
+case "$*" in
+  *rev-parse*) echo "${STUB_HEAD:-f97608f000000000000000000000000000000000}" ;;
+  ls-remote*) printf 'f97608f000000000000000000000000000000000\trefs/tags/v2026.9.24^{}\n' ;;
+esac
+EOF
+cat >"$tmp/stub/curl" <<'EOF'
+#!/bin/sh
+[ -z "${STUB_HONCHO_DOWN:-}" ]
+EOF
+chmod +x "$tmp/stub/"*
+# dr [VAR=value...] [name]: doctor against the fake homes and stubs.
+dr() { local e=(); while [[ ${1:-} == *=* ]]; do e+=("$1"); shift; done; env STUB_HR="$hr" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "${e[@]}" "$cli" doctor "$@"; }
+expect "doctor: whole setup fails on empty token" 1 "^alpha +token +FAIL" -- dr
+expect "doctor: hermes at pinned sha" 0 "^hermes +ok" -- dr delta
+expect "doctor: honcho healthy" 0 "^honcho +ok" -- dr delta
+expect "doctor: unit loaded and active" 0 "^delta +unit +ok" -- dr delta
+expect "doctor: drop-in present" 0 "^delta +drop-in +ok" -- dr delta
+expect "doctor: token set" 0 "^delta +token +ok" -- dr delta
+expect "doctor: home owner and mode" 0 "^delta +home +ok" -- dr delta
+expect "doctor: .env owner and mode" 0 "^delta +env +ok" -- dr delta
+expect "doctor: cannot read other profile" 0 "^delta +cannot-read-beta +ok" -- dr delta
+expect "doctor: other profile cannot read it" 0 "^beta +cannot-read-delta +ok" -- dr delta
+if dr delta 2>&1 | grep -qE "^(alpha|beta|gamma) +(unit|token|home)"; then ko "doctor <name>: one profile only"; else ok "doctor <name>: one profile only"; fi
+if dr 2>&1 | grep -qE "tok\.|sk-or"; then ko "doctor: secrets never printed"; else ok "doctor: secrets never printed"; fi
+expect "doctor: readable .env of another profile fails" 1 "^alpha +cannot-read-delta +FAIL" -- dr STUB_LEAK=delta delta
+expect "doctor: hermes off pin fails" 1 "^hermes +FAIL" -- dr STUB_HEAD=deadbeef delta
+expect "doctor: honcho down fails" 1 "^honcho +FAIL" -- dr STUB_HONCHO_DOWN=1 delta
+expect "doctor: loose .env mode fails" 1 "^delta +env +FAIL" -- dr STUB_ENV_MODE=644 delta
+sed 's/^honcho:.*/honcho: false/' "$lcfg" >"$tmp/nohoncho.yaml"
+expect "doctor: honcho skipped when disabled" 0 "" -- dr STUB_HONCHO_DOWN=1 USINE_CONFIG="$tmp/nohoncho.yaml" delta
+expect "doctor: unmanaged profile refused" 1 "not a managed profile" -- dr stranger
 expect "bootstrap: uv reachable by profiles" 0 "install -m 755 /root/\.hermes/bin/uv /usr/local/bin/uv" -- bs
 
 # Lint: every shell file must pass shellcheck.

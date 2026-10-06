@@ -135,6 +135,15 @@ need_os() {
     die "unsupported OS ($os): only Ubuntu 24.04 and Debian 12 are supported"
 }
 
+# Commit of a Hermes tag. Annotated tags list their commit as <tag>^{};
+# reverse sort puts it first.
+tag_sha() {
+  local sha
+  sha=$(git ls-remote "$HERMES_REPO" "refs/tags/$1^{}" "refs/tags/$1" |
+    sort -rk2 | awk 'NR == 1 { print $1 }')
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+}
+
 # Install Hermes once, shared and read-only for profiles, at the pinned tag.
 bootstrap_hermes() {
   local tag sha installer=/tmp/hermes-install.sh
@@ -144,10 +153,7 @@ bootstrap_hermes() {
     sha="<sha-of-$tag>"
     echo "# skip installer if git -C $HERMES_DIR rev-parse HEAD is at $sha"
   else
-    # Annotated tags list their commit as <tag>^{}; reverse sort puts it first.
-    sha=$(git ls-remote "$HERMES_REPO" "refs/tags/$tag^{}" "refs/tags/$tag" |
-      sort -rk2 | awk 'NR == 1 { print $1 }')
-    [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "cannot resolve Hermes tag $tag"
+    sha=$(tag_sha "$tag") || die "cannot resolve Hermes tag $tag"
   fi
 
   if [[ $DRY_RUN == 0 && $(git -C "$HERMES_DIR" rev-parse HEAD 2>/dev/null) == "$sha" ]]; then
@@ -403,6 +409,76 @@ cmd_list() {
   done
 }
 
+cmd_destroy() {
+  local name=$1 home unit typed="" user=0
+  need_root destroy
+  need_managed "$name"
+  home=$(home_of "$name") unit=$(unit_of "$name")
+  if id -u "$name" >/dev/null 2>&1; then
+    [[ $(getent passwd "$name" | cut -d: -f6) == "$home" ]] ||
+      die "refusing: Linux user $name does not live in $home"
+    user=1
+  fi
+  printf 'Type %s to delete its unit, Linux user and home: ' "$name" >&2
+  read -r typed || true
+  [[ $typed == "$name" ]] || die "aborted"
+
+  run systemctl disable --now "$unit" || true
+  run rm -f "/etc/systemd/system/$unit"
+  run rm -rf "/etc/systemd/system/$unit.d"
+  run systemctl daemon-reload
+  if [[ $user == 1 || $DRY_RUN == 1 ]]; then run userdel "$name"; fi
+  run rm -rf "$home"
+  echo "destroyed $name"
+}
+
+# verdict <label> <cmd...>: print ok/FAIL for one check; FAIL sets failed=1.
+verdict() {
+  if "${@:2}" >/dev/null 2>&1; then
+    printf '%-36s ok\n' "$1"
+  else
+    printf '%-36s FAIL\n' "$1"
+    failed=1
+  fi
+}
+
+can_read() { runuser -u "$1" -- test -r "$(home_of "$2")/.hermes/.env"; }
+cannot_read() { ! can_read "$@"; }
+
+cmd_doctor() {
+  local only=${1:-} all p q unit home sha failed=0
+  [[ -z $only ]] || need_managed "$only"
+  all=$(profiles)
+
+  sha=$(tag_sha "$(cfg hermes_version)") || sha=unresolved
+  verdict hermes test "$(git -C "$HERMES_DIR" rev-parse HEAD 2>/dev/null)" = "$sha"
+  if [[ $(cfg honcho) == true ]]; then
+    verdict honcho curl -fsS -m 5 "$(cfg honcho_url)/health"
+  fi
+
+  for p in ${only:-$all}; do
+    unit=$(unit_of "$p") home=$(home_of "$p")
+    verdict "$p unit" test "$(systemctl show "$unit" -p LoadState --value 2>/dev/null) $(
+      systemctl is-active "$unit" 2>/dev/null)" = "loaded active"
+    verdict "$p drop-in" grep -qF "/etc/systemd/system/$unit.d/isolate.conf" \
+      <<<"$(systemctl show "$unit" -p DropInPaths --value 2>/dev/null)"
+    verdict "$p token" test -n "$(token_of "$p")"
+    verdict "$p home" test "$(stat -c '%U:%G %a' "$home" 2>/dev/null)" = "$p:$p 700"
+    verdict "$p env" test "$(stat -c '%U:%G %a' "$home/.hermes/.env" 2>/dev/null)" = "$p:$p 600"
+  done
+
+  # Isolation proof: each profile reads its own .env (runuser works) and no
+  # other profile's .env, for every ordered pair touching the selection.
+  for p in $all; do
+    verdict "$p reads-own-env" can_read "$p" "$p"
+    for q in $all; do
+      [[ $q != "$p" && (-z $only || $only == "$p" || $only == "$q") ]] || continue
+      verdict "$p cannot-read-$q" cannot_read "$p" "$q"
+    done
+  done
+  [[ $failed == 0 ]] || die "doctor: some checks failed"
+}
+
 main() {
   # --dry-run is accepted anywhere on the command line.
   local args=() a
@@ -429,7 +505,11 @@ main() {
     init) cmd_init ;;
     config) cfg "${1:?usage: usine-hermes config <key>}" ;;
     bootstrap) cmd_bootstrap ;;
-    destroy | doctor) die "$cmd: not implemented yet" ;;
+    destroy) cmd_destroy "$1" ;;
+    doctor)
+      [[ -z ${1:-} ]] || check_name "$1"
+      cmd_doctor "${1:-}"
+      ;;
     *) die "unknown command: $cmd (see 'usine-hermes help')" 2 ;;
   esac
 }
