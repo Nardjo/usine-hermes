@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# usine-hermes: run isolated Hermes Agent profiles on one VPS.
+set -euo pipefail
+
+die() {
+  printf 'usine-hermes: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: usine-hermes <command> [args] [--dry-run]
+
+Commands:
+  init                 write /etc/usine-hermes/usine.yaml
+  bootstrap            install Hermes, Docker and Honcho (idempotent)
+  create <name>        create an isolated profile (not started)
+  start <name>         enable and start a profile
+  stop <name>          stop a profile
+  restart <name>       restart a profile
+  status <name>        show unit state and token presence
+  logs <name>          show redacted logs
+  list                 list managed profiles
+  destroy <name>       remove a profile (asks to type its name)
+  doctor [name]        check the whole setup or one profile
+  help                 show this help
+
+--dry-run prints the commands instead of running them.
+EOF
+}
+
+DRY_RUN=0
+
+# Run a command, or only print it (shell-quoted) under --dry-run.
+run() {
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '+'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+# Profile names double as Linux user, unit and Honcho workspace names.
+check_name() {
+  [[ ${1:-} =~ ^[a-z][a-z0-9-]{1,30}$ ]] ||
+    die "invalid name '${1:-}': expected ^[a-z][a-z0-9-]{1,30}\$" 2
+}
+
+main() {
+  # --dry-run is accepted anywhere on the command line.
+  local args=() a
+  for a in "$@"; do
+    if [[ $a == --dry-run ]]; then DRY_RUN=1; else args+=("$a"); fi
+  done
+  set -- "${args[@]+"${args[@]}"}"
+
+  local cmd=${1:-help}
+  shift || true
+  case $cmd in
+    help | -h | --help) usage ;;
+    create | start | stop | restart | status | logs | destroy)
+      check_name "${1:-}"
+      die "$cmd: not implemented yet"
+      ;;
+    init | bootstrap | list | doctor) die "$cmd: not implemented yet" ;;
+    *) die "unknown command: $cmd (see 'usine-hermes help')" 2 ;;
+  esac
+}
+
+main "$@"
