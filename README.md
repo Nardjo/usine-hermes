@@ -27,7 +27,7 @@ Each profile is the default profile of its own Hermes home, so there is no profi
 
 ## Requirements
 
-- Ubuntu 24.04 or Debian 12 (anything else is refused).
+- Ubuntu 24.04, Debian 12 or Debian 13 (anything else is refused).
 - Root (or sudo).
 - Disk: about 2 GB for the shared Hermes install, plus a few GB for the Honcho images and database.
 - RAM: Honcho runs Postgres, Redis, an API and a deriver; plan for at least 2 GB total, more with many agents.

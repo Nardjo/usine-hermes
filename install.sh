@@ -15,8 +15,8 @@ die() {
 # shellcheck source=/dev/null
 os=$( [[ -r $os_release ]] && . "$os_release" && echo "${ID:-} ${VERSION_ID:-}" ) || os=unknown
 case $os in
-  "ubuntu 24.04" | "debian 12") ;;
-  *) die "unsupported OS ($os): only Ubuntu 24.04 and Debian 12 are supported" ;;
+  "ubuntu 24.04" | "debian 12" | "debian 13") ;;
+  *) die "unsupported OS ($os): only Ubuntu 24.04, Debian 12 and Debian 13 are supported" ;;
 esac
 
 [[ $EUID -eq 0 ]] || die "must run as root (try: sudo ./install.sh)"

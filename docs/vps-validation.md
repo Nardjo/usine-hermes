@@ -1,6 +1,6 @@
 # Manual validation on a throwaway VPS
 
-`tests/test.sh` cannot exercise systemd, Docker, Discord or provider logins. Run this procedure before calling a release good. Use a fresh Ubuntu 24.04 VPS (2 GB+ RAM), then repeat on Debian 12 if possible. Destroy the VPS afterwards.
+`tests/test.sh` cannot exercise systemd, Docker, Discord or provider logins. Run this procedure before calling a release good. Use a fresh Ubuntu 24.04 VPS (2 GB+ RAM), then repeat on Debian 12 and Debian 13 if possible. Destroy the VPS afterwards.
 
 You need: an OpenRouter key (Honcho + profiles), two Discord applications with bots (see the README Discord guide), a test Discord server, your Discord user id, and a second Discord account that is not allowlisted.
 
@@ -59,7 +59,7 @@ Tick each one on the VPS; open an issue for any failure.
 - [ ] Known: a `create` failing midway leaves user + home; `destroy` cleans it
 
 ### Honcho
-- [ ] Docker from the official repo installs on Ubuntu 24.04 and Debian 12; `docker compose version` >= v2.24
+- [ ] Docker from the official repo installs on Ubuntu 24.04, Debian 12 and Debian 13; `docker compose version` >= v2.24
 - [ ] The ghcr image entrypoint works without a build; `/health` answers within 180 s
 - [ ] `ss -tlnp`: only `127.0.0.1:8000` from Honcho
 - [ ] Honcho is back after reboot; a `bootstrap` re-run keeps the DB password and does not re-ask the key

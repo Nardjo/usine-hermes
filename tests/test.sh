@@ -47,7 +47,7 @@ for v in "fedora 40" "ubuntu 22.04" "debian 11"; do
     env USINE_OS_RELEASE="$(osr "$id" "$ver")" "$BASH" "$root/install.sh"
 done
 if [[ $EUID -ne 0 ]]; then
-  for v in "ubuntu 24.04" "debian 12"; do
+  for v in "ubuntu 24.04" "debian 12" "debian 13"; do
     read -r id ver <<<"$v"
     expect "install: $v accepted, non-root refused" 1 "must run as root" -- \
       env USINE_OS_RELEASE="$(osr "$id" "$ver")" "$BASH" "$root/install.sh"

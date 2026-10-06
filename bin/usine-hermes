@@ -161,8 +161,8 @@ need_os() {
   local os
   # shellcheck source=/dev/null
   os=$( . "${USINE_OS_RELEASE:-/etc/os-release}" && echo "${ID:-} ${VERSION_ID:-}" ) || os=unknown
-  [[ $os == "ubuntu 24.04" || $os == "debian 12" ]] ||
-    die "unsupported OS ($os): only Ubuntu 24.04 and Debian 12 are supported"
+  [[ $os == "ubuntu 24.04" || $os == "debian 12" || $os == "debian 13" ]] ||
+    die "unsupported OS ($os): only Ubuntu 24.04, Debian 12 and Debian 13 are supported"
 }
 
 # Commit of a Hermes tag. Annotated tags list their commit as <tag>^{};
