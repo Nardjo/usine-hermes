@@ -137,7 +137,10 @@ crf() { cr ab --personality "dry wit" --mission "watch the logs" --provider anth
 expect "create: system nologin user + own group" 0 \
   "useradd --system --user-group --home-dir /var/lib/usine-hermes/ab --no-create-home --shell /usr/sbin/nologin ab" -- crf
 expect "create: private home 700 owned by profile" 0 "install -d -m 700 -o ab -g ab /var/lib/usine-hermes/ab" -- crf
-expect "create: ownership marker" 0 "/var/lib/usine-hermes/ab/\.usine-hermes" -- crf
+# Root-owned registry next to the config (here the repo root), right after useradd.
+expect "create: ownership marker in root registry" 0 "install -m 644 -o root -g root /dev/null $root/profiles/ab$" -- crf
+if crf 2>&1 | grep -A2 "useradd" | grep -c >/dev/null "profiles/ab$"; then ok "create: marker right after useradd"; else ko "create: marker right after useradd"; fi
+if crf 2>&1 | grep -c >/dev/null "lib/usine-hermes/ab/\.usine-hermes"; then ko "create: no marker in profile home"; else ok "create: no marker in profile home"; fi
 expect "create: SOUL.md with personality" 0 "^\| .*dry wit" -- crf
 expect "create: SOUL.md with mission" 0 "^\| .*watch the logs" -- crf
 expect "create: .env 600 owned by profile" 0 \
@@ -190,12 +193,14 @@ fi
 # Lifecycle against a fake home_root; systemctl/journalctl stubbed on PATH.
 hr="$tmp/homes"; lcfg="$tmp/life.yaml"
 sed "s|^home_root:.*|home_root: $hr|" "$root/usine.example.yaml" >"$lcfg"
-mkprof() { mkdir -p "$hr/$1/.hermes"; : >"$hr/$1/.usine-hermes"; printf 'DISCORD_BOT_TOKEN=%s\nOPENROUTER_API_KEY=%s\n' "$2" "$3" >"$hr/$1/.hermes/.env"; }
+mkprof() { mkdir -p "$hr/$1/.hermes" "$tmp/profiles"; : >"$tmp/profiles/$1"; printf 'DISCORD_BOT_TOKEN=%s\nOPENROUTER_API_KEY=%s\n' "$2" "$3" >"$hr/$1/.hermes/.env"; }
 mkprof alpha "" ""
 mkprof beta "tok.beta.1234567890" "sk-or-beta-secret"
 mkprof gamma "tok.beta.1234567890" ""
 mkprof delta "tok.delta.0987654321" "sk-or-delta-secret"
-mkdir -p "$hr/stranger" "$tmp/stub"
+mkdir -p "$hr/stranger" "$hr/imposter/.hermes" "$tmp/stub"
+# A marker inside a home is profile-writable, so it never counts.
+: >"$hr/imposter/.usine-hermes"
 cat >"$tmp/stub/systemctl" <<'EOF'
 #!/bin/sh
 case "$1 $*" in
@@ -215,11 +220,13 @@ lc() { env USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" "$@"; }
 expect "start: empty token refused" 1 "empty" -- lc start alpha --dry-run
 expect "start: duplicate token refused" 1 "already used by beta" -- lc start gamma --dry-run
 expect "start: unmanaged profile refused" 1 "not a managed profile" -- lc start stranger --dry-run
+expect "start: marker in home not trusted" 1 "not a managed profile" -- lc start imposter --dry-run
+expect "create: managed profile points to destroy" 1 "already managed.*destroy delta" -- lc create delta --provider anthropic --dry-run
 expect "start: enables and starts" 0 "systemctl enable --now usine-delta\.service" -- lc start delta --dry-run
 expect "stop: stops unit" 0 "systemctl stop usine-delta\.service" -- lc stop delta --dry-run
 expect "restart: restarts unit" 0 "systemctl restart usine-delta\.service" -- lc restart delta --dry-run
 expect "list: managed profiles only" 0 "^delta +active +token=set" -- lc list
-if lc list 2>&1 | grep -c >/dev/null stranger; then ko "list: hides non-managed dirs"; else ok "list: hides non-managed dirs"; fi
+if lc list 2>&1 | grep -cE >/dev/null "stranger|imposter"; then ko "list: hides non-managed dirs"; else ok "list: hides non-managed dirs"; fi
 expect "list: empty token shown" 0 "^alpha +active +token=empty" -- lc list
 expect "status: unit state + token" 0 "token=set" -- lc status delta
 expect "logs: journal of the unit" 0 "login ok" -- lc logs delta
@@ -238,7 +245,8 @@ expect "destroy: removes drop-in dir" 0 "rm -rf /etc/systemd/system/usine-delta\
 expect "destroy: daemon-reload" 0 "systemctl daemon-reload" -- lc destroy delta --dry-run <<<delta
 expect "destroy: removes user" 0 "userdel delta" -- lc destroy delta --dry-run <<<delta
 expect "destroy: removes home" 0 "rm -rf $hr/delta$" -- lc destroy delta --dry-run <<<delta
-if [[ -f $hr/delta/.usine-hermes ]]; then ok "destroy: dry-run keeps files"; else ko "destroy: dry-run keeps files"; fi
+expect "destroy: removes marker last" 0 "rm -f $tmp/profiles/delta"$'\n'"destroyed" -- lc destroy delta --dry-run <<<delta
+if [[ -f $tmp/profiles/delta ]]; then ok "destroy: dry-run keeps files"; else ko "destroy: dry-run keeps files"; fi
 if [[ $EUID -ne 0 ]]; then
   expect "destroy: non-root refused" 1 "must run as root" -- lc destroy delta <<<delta
 fi
@@ -273,7 +281,7 @@ cat >"$tmp/stub/curl" <<'EOF'
 EOF
 chmod +x "$tmp/stub/"*
 # dr [VAR=value...] [name]: doctor against the fake homes and stubs.
-dr() { local e=(); while [[ ${1:-} == *=* ]]; do e+=("$1"); shift; done; env STUB_HR="$hr" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "${e[@]}" "$cli" doctor "$@"; }
+dr() { local e=(); while [[ ${1:-} == *=* ]]; do e+=("$1"); shift; done; env STUB_HR="$hr" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "${e[@]}" "$cli" doctor --dry-run "$@"; }
 expect "doctor: whole setup fails on empty token" 1 "^alpha +token +FAIL" -- dr
 expect "doctor: hermes at pinned sha" 0 "^hermes +ok" -- dr delta
 expect "doctor: honcho healthy" 0 "^honcho +ok" -- dr delta
@@ -284,7 +292,7 @@ expect "doctor: home owner and mode" 0 "^delta +home +ok" -- dr delta
 expect "doctor: .env owner and mode" 0 "^delta +env +ok" -- dr delta
 expect "doctor: cannot read other profile" 0 "^delta +cannot-read-beta +ok" -- dr delta
 expect "doctor: other profile cannot read it" 0 "^beta +cannot-read-delta +ok" -- dr delta
-if dr delta 2>&1 | grep -cE >/dev/null "^(alpha|beta|gamma) +(unit|token|home)"; then ko "doctor <name>: one profile only"; else ok "doctor <name>: one profile only"; fi
+if dr delta 2>&1 | grep -cE >/dev/null "^(alpha|beta|gamma) +(unit|token|home|reads-own-env)"; then ko "doctor <name>: one profile only"; else ok "doctor <name>: one profile only"; fi
 if dr 2>&1 | grep -cE >/dev/null "tok\.|sk-or"; then ko "doctor: secrets never printed"; else ok "doctor: secrets never printed"; fi
 expect "doctor: readable .env of another profile fails" 1 "^alpha +cannot-read-delta +FAIL" -- dr STUB_LEAK=delta delta
 expect "doctor: hermes off pin fails" 1 "^hermes +FAIL" -- dr STUB_HEAD=deadbeef delta
@@ -293,6 +301,9 @@ expect "doctor: loose .env mode fails" 1 "^delta +env +FAIL" -- dr STUB_ENV_MODE
 sed 's/^honcho:.*/honcho: false/' "$lcfg" >"$tmp/life-nohoncho.yaml"
 expect "doctor: honcho skipped when disabled" 0 "" -- dr STUB_HONCHO_DOWN=1 USINE_CONFIG="$tmp/life-nohoncho.yaml" delta
 expect "doctor: unmanaged profile refused" 1 "not a managed profile" -- dr stranger
+if [[ $EUID -ne 0 ]]; then
+  expect "doctor: non-root refused" 1 "must run as root" -- env USINE_CONFIG="$lcfg" "$cli" doctor
+fi
 
 # Honcho (on in the example config): Docker from the official repo + compose stack.
 nocfg="$tmp/nohoncho.yaml"
