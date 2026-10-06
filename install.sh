@@ -27,6 +27,7 @@ shopt -s nullglob
 for f in "$src"/templates/*; do
   install -m 644 "$f" "$share_dir/templates/"
 done
+install -D -m 644 "$src/skills/usine-hermes/SKILL.md" "$share_dir/skills/usine-hermes/SKILL.md"
 [[ -f $src/usine.example.yaml ]] && install -m 644 "$src/usine.example.yaml" "$share_dir/"
 
 echo "Installed $bin_dir/usine-hermes and $share_dir."

@@ -195,6 +195,27 @@ if sub openai-codex 2>&1 | grep -c >/dev/null "secret ab .*_API_KEY"; then ko "c
 expect "create: missing flag still asks secrets" 0 "would ask \(hidden\)" -- cr ab --provider anthropic
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
 expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
+# Vulcain preset: an operator profile that creates profiles through the bridge.
+vc() { cr vul --preset vulcain --provider openrouter; }
+hh=/var/lib/usine-hermes/vul/.hermes
+expect "preset: unknown preset rejected" 2 "unknown preset" -- cr vul --preset nope --provider openrouter
+expect "preset: Vulcain SOUL installed" 0 "write $hh/SOUL\.md \(mode 644, owner vul:vul\)" -- vc
+expect "preset: SOUL never handles secrets" 0 "^\| .*[Nn]ever ask.*secret" -- vc
+expect "preset: skill dir owned by profile" 0 "install -d -m 700 -o vul -g vul $hh/skills $hh/skills/usine-hermes$" -- vc
+expect "preset: Vulcain skill installed in its profile" 0 \
+  "install -m 644 -o vul -g vul $root/skills/usine-hermes/SKILL\.md $hh/skills/usine-hermes/SKILL\.md" -- vc
+expect "preset: only the bridge is pre-approved" 0 \
+  "runuser -u vul -- .*hermes config set command_allowlist .*sudo.{1,2}-n.{1,2}/usr/local/bin/usine-hermes.{1,2}bridge.{1,3}\\*" -- vc
+expect "preset: sudoers staged under an ignored name" 0 "write /etc/sudoers\.d/usine-hermes-vul\.new \(mode 440, owner root:root\)" -- vc
+expect "preset: sudoers allows the bridge only" 0 \
+  "^\| vul ALL=\(root\) NOPASSWD: /usr/local/bin/usine-hermes bridge \*$" -- vc
+expect "preset: sudoers checked before use" 0 \
+  "visudo -cf /etc/sudoers\.d/usine-hermes-vul\.new"$'\n'"\+ mv /etc/sudoers\.d/usine-hermes-vul\.new /etc/sudoers\.d/usine-hermes-vul$" -- vc
+expect "preset: drop-in relaxes NoNewPrivileges only" 0 \
+  "write /etc/systemd/system/usine-vul\.service\.d/vulcain\.conf"$'\n'"\| \[Service\]"$'\n'"\| NoNewPrivileges=no$" -- vc
+expect "preset: still sandboxed by isolate.conf" 0 "write /etc/systemd/system/usine-vul\.service\.d/isolate\.conf" -- vc
+if vc 2>&1 | grep -cE >/dev/null "would ask|\[.*\]: |systemctl (enable|start)"; then ko "preset: no prompt, not started"; else ok "preset: no prompt, not started"; fi
+if crf 2>&1 | grep -cE >/dev/null "sudoers|command_allowlist|vulcain"; then ko "create: no operator bits without preset"; else ok "create: no operator bits without preset"; fi
 if [[ $EUID -ne 0 ]]; then
   expect "create: non-root refused" 1 "must run as root" -- \
     env USINE_CONFIG="$root/usine.example.yaml" "$cli" create ab --provider anthropic </dev/null
@@ -252,6 +273,7 @@ expect "destroy: asks to type the name" 0 "Type delta" -- lc destroy delta --dry
 expect "destroy: stops and disables unit" 0 "systemctl disable --now usine-delta\.service" -- lc destroy delta --dry-run <<<delta
 expect "destroy: removes unit" 0 "rm -f /etc/systemd/system/usine-delta\.service$" -- lc destroy delta --dry-run <<<delta
 expect "destroy: removes drop-in dir" 0 "rm -rf /etc/systemd/system/usine-delta\.service\.d" -- lc destroy delta --dry-run <<<delta
+expect "destroy: removes any operator sudoers rule" 0 "rm -f /etc/sudoers\.d/usine-hermes-delta$" -- lc destroy delta --dry-run <<<delta
 expect "destroy: daemon-reload" 0 "systemctl daemon-reload" -- lc destroy delta --dry-run <<<delta
 expect "destroy: removes user" 0 "userdel delta" -- lc destroy delta --dry-run <<<delta
 expect "destroy: removes home" 0 "rm -rf $hr/delta$" -- lc destroy delta --dry-run <<<delta

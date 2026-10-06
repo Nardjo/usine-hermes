@@ -15,7 +15,7 @@ Commands:
   init                 write /etc/usine-hermes/usine.yaml ($USINE_CONFIG overrides)
   config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
-  create <name> [--personality T] [--mission T] [--provider P]
+  create <name> [--personality T] [--mission T] [--provider P] [--preset vulcain]
                        create an isolated profile (not started)
   secret <name> <KEY>  set one secret in the profile .env (hidden prompt)
   start <name>         enable and start a profile
@@ -311,6 +311,9 @@ cmd_bootstrap() {
 # Repo checkout first (tests, ./bin/usine-hermes), then the install.sh location.
 TEMPLATES=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates
 [[ -d $TEMPLATES ]] || TEMPLATES=/usr/local/share/usine-hermes/templates
+SKILL=$(dirname "$TEMPLATES")/skills/usine-hermes/SKILL.md
+# Installed CLI: the only command the Vulcain preset may run as root.
+BIN=/usr/local/bin/usine-hermes
 
 # Env var holding the API key of a provider; empty for subscription providers.
 key_var() {
@@ -440,12 +443,27 @@ choose_provider() {
   printf -v "$1" '%s' "$answer"
 }
 
+# Operator bits of the Vulcain preset: its skill, a pre-approved bridge
+# command (no blanket YOLO), one sudoers rule, and the NoNewPrivileges drop-in.
+install_vulcain() {
+  local name=$1 hermes_home sudoers=/etc/sudoers.d/usine-hermes-$1
+  hermes_home=$(home_of "$name")/.hermes
+  run install -d -m 700 -o "$name" -g "$name" "$hermes_home/skills" "$hermes_home/skills/usine-hermes"
+  run install -m 644 -o "$name" -g "$name" "$SKILL" "$hermes_home/skills/usine-hermes/SKILL.md"
+  as_profile "$name" hermes config set command_allowlist "[\"sudo -n $BIN bridge *\"]"
+  # sudo ignores sudoers.d names with a dot: stage, check, then publish.
+  echo "$name ALL=(root) NOPASSWD: $BIN bridge *" | write_file 440 root:root "$sudoers.new"
+  run visudo -cf "$sudoers.new"
+  run mv "$sudoers.new" "$sudoers"
+  render "$name" vulcain.conf | write_file 644 root:root "/etc/systemd/system/$(unit_of "$name").d/vulcain.conf"
+}
+
 cmd_create() {
-  local name=$1 personality="" mission="" provider="" home hermes_home unit
+  local name=$1 personality="" mission="" provider="" preset="" home hermes_home unit
   shift
   while [[ $# -gt 0 ]]; do
     case $1 in
-      --personality | --mission | --provider)
+      --personality | --mission | --provider | --preset)
         [[ $# -ge 2 ]] || die "$1 needs a value" 2
         printf -v "${1#--}" '%s' "$2"
         shift 2
@@ -453,6 +471,12 @@ cmd_create() {
       *) die "unknown flag: $1" 2 ;;
     esac
   done
+  # The preset brings its own SOUL.md: nothing to ask.
+  case $preset in
+    "") ;;
+    vulcain) personality=preset mission=preset ;;
+    *) die "unknown preset: $preset (only: vulcain)" 2 ;;
+  esac
   need_root create
   home=$(home_of "$name") hermes_home=$(home_of "$name")/.hermes unit=$(unit_of "$name")
   [[ ! -f $REGISTRY/$name ]] ||
@@ -492,8 +516,11 @@ cmd_create() {
   run install -d -m 755 -o root -g root "$REGISTRY"
   echo "provider=$provider" | write_file 644 root:root "$REGISTRY/$name"
   run install -d -m 700 -o "$name" -g "$name" "$home" "$hermes_home" "$home/lazy-packages"
-  printf '# %s\n\n## Personality\n%s\n\n## Mission\n%s\n' "$name" "$personality" "$mission" |
-    write_file 644 "$name:$name" "$hermes_home/SOUL.md"
+  if [[ -n $preset ]]; then
+    render "$name" vulcain-SOUL.md
+  else
+    printf '# %s\n\n## Personality\n%s\n\n## Mission\n%s\n' "$name" "$personality" "$mission"
+  fi | write_file 644 "$name:$name" "$hermes_home/SOUL.md"
 
   as_profile "$name" hermes config set model.provider "$provider"
   as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
@@ -524,6 +551,7 @@ cmd_create() {
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
   render "$name" isolate.conf | write_file 644 root:root "/etc/systemd/system/$unit.d/isolate.conf"
+  [[ -z $preset ]] || install_vulcain "$name"
   run systemctl daemon-reload
   if [[ -n $key_name ]]; then :
   elif [[ $login == [yY]* ]]; then
@@ -646,6 +674,7 @@ cmd_destroy() {
   run systemctl disable --now "$unit" || true
   run rm -f "/etc/systemd/system/$unit"
   run rm -rf "/etc/systemd/system/$unit.d"
+  run rm -f "/etc/sudoers.d/usine-hermes-$name"
   run systemctl daemon-reload
   if [[ $user == 1 || $DRY_RUN == 1 ]]; then run userdel "$name"; fi
   run rm -rf "$home"
