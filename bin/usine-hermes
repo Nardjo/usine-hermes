@@ -67,6 +67,30 @@ cfg() {
     END { exit !found }' "$CONFIG" || die "unknown config key: $1"
 }
 
+# check_value <key> <value>: values that feed sed, honcho.json, URLs and
+# rm -rf paths must match a strict pattern.
+check_value() {
+  local re=
+  case $1 in
+    home_root) re='^/[A-Za-z0-9/._-]*[A-Za-z0-9._-]$' ;;
+    hermes_version) re='^v[0-9]+\.[0-9]+\.[0-9]+$' ;;
+    peer_name) re='^[A-Za-z0-9_-]{1,64}$' ;;
+    honcho_url) re='^(http://127\.0\.0\.1:[0-9]+|https?://[A-Za-z0-9.:-]+)$' ;;
+    discord_allowed_users) re='^([0-9]+(,[0-9]+)*)?$' ;;
+  esac
+  [[ $2 =~ $re ]] || die "invalid $1: '$2' (must match $re)" 2
+  [[ $1 != home_root || /$2/ != */../* ]] || die "invalid home_root: '$2' (no ..)" 2
+}
+
+# Validate every checked key of the loaded config once, before any command.
+check_config() {
+  local key value
+  for key in home_root hermes_version peer_name honcho_url discord_allowed_users; do
+    value=$(cfg "$key")
+    check_value "$key" "$value"
+  done
+}
+
 # ask <var> <question> <default>: read one answer from stdin, Enter keeps default.
 ask() {
   local _reply=
@@ -83,7 +107,9 @@ cmd_init() {
   fi
   local home_root hermes_version provider allow honcho peer
   ask home_root "Home root for profiles" /var/lib/usine-hermes
+  check_value home_root "$home_root"
   ask hermes_version "Pinned Hermes version" v2026.9.24
+  check_value hermes_version "$hermes_version"
   ask provider "Default provider ($PROVIDERS)" openrouter
   [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
   ask allow "Discord allowlist (user ids, comma-separated)" ""
@@ -92,9 +118,11 @@ cmd_init() {
   ask honcho "Enable Honcho memory (true/false)" true
   [[ $honcho == true || $honcho == false ]] || die "honcho must be true or false" 2
   ask peer "Your peer name in Honcho" owner
+  check_value peer_name "$peer"
 
-  mkdir -p "$(dirname "$CONFIG")"
-  cat >"$CONFIG" <<EOF
+  run mkdir -p "$(dirname "$CONFIG")"
+  # Owned by the caller (root on a VPS); readable, it holds no secrets.
+  write_file 644 "$EUID" "$CONFIG" <<EOF
 # usine-hermes machine config (no secrets). See usine.example.yaml.
 home_root: $home_root
 hermes_version: $hermes_version
@@ -113,7 +141,7 @@ honcho: $honcho
 peer_name: $peer
 honcho_url: http://127.0.0.1:8000
 EOF
-  echo "wrote $CONFIG"
+  [[ $DRY_RUN == 1 ]] || echo "wrote $CONFIG"
 }
 
 HERMES_REPO=https://github.com/NousResearch/hermes-agent
@@ -312,15 +340,17 @@ token_state() {
   else echo "token=empty"; fi
 }
 
-# write_file <mode> <owner> <path> [secret]: stdin to file, umask 077 then
-# chmod/chown. Dry-run prints the target, and the content unless secret.
+# write_file <mode> <owner> <path> [secret]: stdin to a fresh file (umask 077,
+# noclobber), then chown/chmod. Never writes through an existing file, link or
+# looser mode. Dry-run prints the target, and the content unless secret.
 write_file() {
   if [[ $DRY_RUN == 1 ]]; then
     printf '+ write %s (mode %s, owner %s)\n' "$3" "$1" "$2"
     if [[ ${4:-} == secret ]]; then cat >/dev/null; else sed 's/^/| /'; fi
     return
   fi
-  (umask 077 && cat >"$3")
+  rm -f "$3"
+  (umask 077 && set -C && cat >"$3")
   chown "$2" "$3"
   chmod "$1" "$3"
 }
@@ -619,6 +649,8 @@ main() {
   case $cmd in
     help | -h | --help) usage ;;
     create | start | stop | restart | status | logs | destroy) check_name "${1:-}" ;;&
+    create | start | stop | restart | status | logs | destroy | list | config | bootstrap | doctor)
+      check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
     stop | restart)

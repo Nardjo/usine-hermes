@@ -58,6 +58,8 @@ fi
 cfgf="$tmp/etc/usine.yaml"
 uc() { env USINE_CONFIG="$cfgf" "$cli" "$@"; }
 expect "config without file points to init" 1 "usine-hermes init" -- uc config home_root
+expect "init --dry-run prints the config" 0 "write $cfgf" -- uc init --dry-run </dev/null
+if [[ -e $cfgf ]]; then ko "init --dry-run writes nothing"; else ok "init --dry-run writes nothing"; fi
 expect "init with defaults (empty input)" 0 "wrote" -- uc init </dev/null
 expect "config reads home_root default" 0 "^/var/lib/usine-hermes$" -- uc config home_root
 expect "config reads pinned hermes_version" 0 "^v2026\.9\.24$" -- uc config hermes_version
@@ -72,6 +74,14 @@ keys() { grep -E '^[a-z_]+:' "$1" | cut -d: -f1 | sort; }
 if [[ "$(keys "$cfgf")" == "$(keys "$root/usine.example.yaml")" ]]; then ok "example has same keys as init"; else ko "example has same keys as init"; fi
 expect "config reads example via USINE_CONFIG" 0 "^gpt-6-sol$" -- \
   env USINE_CONFIG="$root/usine.example.yaml" "$cli" config model_openai_api
+# Loaded config is validated too (it feeds sed, honcho.json and rm -rf paths).
+badc() { sed "s#^$1:.*#$1: $2#" "$root/usine.example.yaml" >"$tmp/bad.yaml"; env USINE_CONFIG="$tmp/bad.yaml" "$cli" "${@:3}"; }
+expect "load rejects bad home_root" 2 "invalid home_root" -- badc home_root "/srv/a b" config peer_name
+expect "load rejects bad honcho_url" 2 "invalid honcho_url" -- badc honcho_url 'http://x/"' create ab --dry-run
+expect "load accepts https honcho_url" 0 "" -- badc honcho_url "https://honcho.example:8443" config honcho_url
+expect "load rejects bad allowlist" 2 "invalid discord_allowed_users" -- badc discord_allowed_users "1;2" config honcho
+expect "load rejects bad hermes_version" 2 "invalid hermes_version" -- badc hermes_version "v1|x" bootstrap --dry-run
+expect "load rejects bad peer_name" 2 "invalid peer_name" -- badc peer_name '"x' config honcho
 expect "existing config kept on 'n'" 0 "kept" -- uc init <<<"n"
 expect "kept config unchanged" 0 "^openrouter$" -- uc config default_provider
 expect "overwrite on 'y' with answers" 0 "wrote" -- uc init <<<$'y\n/srv/usine\n\nanthropic\n123, 456\nfalse\njordan'
@@ -81,10 +91,20 @@ expect "answer provider written" 0 "^anthropic$" -- uc config default_provider
 expect "allowlist normalised" 0 "^123,456$" -- uc config discord_allowed_users
 expect "answer honcho written" 0 "^false$" -- uc config honcho
 expect "answer peer_name written" 0 "^jordan$" -- uc config peer_name
+# A rewrite replaces the file: never writes through a link to another file.
+echo keep >"$tmp/other"; ln -f "$tmp/other" "$cfgf"
+uc init <<<"y" >/dev/null 2>&1
+if [[ $(cat "$tmp/other") == keep ]]; then ok "init never writes through a link"; else ko "init never writes through a link"; fi
 rm -f "$cfgf"
 expect "init rejects unknown provider" 2 "provider" -- uc init <<<$'\n\nnope'
 expect "init rejects bad allowlist" 2 "allowlist" -- uc init <<<$'\n\n\nabc'
 expect "init rejects bad honcho" 2 "honcho" -- uc init <<<$'\n\n\n\nmaybe'
+expect "init rejects relative home_root" 2 "home_root" -- uc init <<<$'var/lib'
+expect "init rejects / as home_root" 2 "home_root" -- uc init <<<$'/'
+expect "init rejects .. in home_root" 2 "home_root" -- uc init <<<$'/var/../etc'
+expect "init rejects odd chars in home_root" 2 "home_root" -- uc init <<<$'/var/lib|x'
+expect "init rejects bad hermes_version" 2 "hermes_version" -- uc init <<<$'\nmain;rm'
+expect "init rejects bad peer_name" 2 "peer_name" -- uc init <<<$'\n\n\n\n\na"b'
 expect "rejected init writes nothing" 1 "usine-hermes init" -- uc config home_root
 
 # bootstrap --dry-run: planned Hermes install, no root, no network.
