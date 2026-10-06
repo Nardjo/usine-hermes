@@ -7,6 +7,7 @@ Turn a fresh VPS into a factory of isolated [Hermes Agent](https://github.com/No
 ```
 /usr/local/bin/usine-hermes          the CLI (+ templates in /usr/local/share/usine-hermes)
 /etc/usine-hermes/usine.yaml         machine config (no secrets)
+/etc/usine-hermes/profiles/<name>    root-owned ownership marker of each managed profile
 /usr/local/lib/hermes-agent          Hermes, pinned, shared, root-owned, read-only for profiles
 /opt/usine-hermes/honcho             Honcho memory (docker compose), API on 127.0.0.1:8000 only
 
@@ -50,16 +51,16 @@ sudo usine-hermes doctor            # checks everything, including isolation
 
 | Command | What it does |
 |---|---|
-| `init` | Asks a few questions, writes `/etc/usine-hermes/usine.yaml` (asks before overwriting). `USINE_CONFIG` overrides the path. |
+| `init` | Asks a few questions, writes `/etc/usine-hermes/usine.yaml` (asks before overwriting; with `--dry-run` only prints it). `USINE_CONFIG` overrides the path; the profile registry lives in a `profiles/` directory next to it. |
 | `config <key>` | Prints one config value. |
 | `bootstrap` | Installs prerequisites, Hermes at the pinned tag, pre-installs the Discord and Honcho deps into the shared venv, then (if `honcho: true`) Docker from Docker's apt repo and the Honcho stack. Waits up to 180 s for Honcho health. Asks once (hidden) for the OpenRouter key. |
-| `create <name> [--personality T] [--mission T] [--provider P]` | Creates the Linux user, home, `SOUL.md`, model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in. Does not start. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user. Secrets prompts are hidden; Enter leaves them empty. |
+| `create <name> [--personality T] [--mission T] [--provider P]` | Creates the Linux user, home, `SOUL.md`, model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in. Does not start. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user. A name that is already managed (including a half-created profile) is refused with a pointer to `destroy`. Secrets prompts are hidden; Enter leaves them empty. |
 | `start <name>` | `systemctl enable --now`. Refuses if `DISCORD_BOT_TOKEN` is empty or used by another profile. |
 | `stop <name>` / `restart <name>` | systemctl stop / restart. |
 | `status <name>` | Redacted `systemctl status` plus `token=set|empty|unknown`. |
 | `logs <name> [-n N]` | Last N journal lines (default 100), secrets redacted. |
 | `list` | Every managed profile with unit state and token state. |
-| `destroy <name>` | Asks you to type the name, then removes unit, drop-in, Linux user and home. Only touches profiles carrying the `.usine-hermes` marker. |
+| `destroy <name>` | Asks you to type the name, then removes unit, drop-in, Linux user and home. Only touches profiles listed in the root-owned registry `/etc/usine-hermes/profiles/`. |
 | `doctor [name]` | Checks Hermes pin, Honcho health, and per profile: unit loaded and active, drop-in applied, token set, home `700`, `.env` `600`, and that each profile reads its own `.env` but no other profile's. Exits non-zero on any `FAIL`. Run it as root. |
 
 ## Discord setup (one bot per profile)
@@ -94,7 +95,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 
 ## Config reference
 
-`/etc/usine-hermes/usine.yaml`, flat `key: value`, no secrets. See [usine.example.yaml](usine.example.yaml).
+`/etc/usine-hermes/usine.yaml`, flat `key: value`, no secrets. See [usine.example.yaml](usine.example.yaml). `init` and every command validate `home_root` (absolute, not `/`, no `..`, only `A-Za-z0-9/._-`), `hermes_version` (`vX.Y.Z`), `peer_name`, `honcho_url` and `discord_allowed_users`, and refuse to run on a bad value.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -114,7 +115,8 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 - Honcho has no auth: it listens on 127.0.0.1 only, but any local process, including any profile, can query any workspace. File isolation holds; **memory isolation between profiles does not**.
 - Pre-installing the Discord and Honcho deps into the shared venv is inferred from upstream's Docker image, not documented for script installs. Each profile also gets its own lazy-install directory as a fallback.
 - No upgrades in V1: changing `hermes_version` and re-running `bootstrap` is untested; do not run `hermes update` (it leaves the pin). No backups.
-- A `create` that fails midway leaves the user and home behind; clean up with `destroy`.
+- A `create` that fails midway leaves the user and home behind; its marker is written right after the user, so `destroy` always cleans it up.
+- The Claude CLI (Claude subscription provider) comes from Anthropic's official installer (`claude.ai/install.sh`), which is not pinned: each `create` gets the current release.
 - Discord only.
 
 ## Tests

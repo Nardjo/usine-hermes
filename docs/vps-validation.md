@@ -26,7 +26,7 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
 7. **Logs**: `sudo usine-hermes logs alice -n 200` and `status alice`: no token or key visible.
 8. **Reboot**: `sudo reboot`, then `list` (both active), `doctor` green, both bots answer.
 9. **Exposure**: `sudo ss -tlnp`: Honcho only on `127.0.0.1:8000`; no Postgres (5432) or Redis (6379) listener on any interface.
-10. **Destroy**: `sudo usine-hermes destroy bob` (type `bob`). Then `id bob` and `getent group bob` fail, `/var/lib/usine-hermes/bob` and `/etc/systemd/system/usine-bob.service*` are gone, `list` and `doctor` show only alice.
+10. **Destroy**: `sudo usine-hermes destroy bob` (type `bob`). Then `id bob` and `getent group bob` fail, `/var/lib/usine-hermes/bob`, `/etc/usine-hermes/profiles/bob` and `/etc/systemd/system/usine-bob.service*` are gone, `list` and `doctor` show only alice.
 11. Optional: a third profile with a subscription provider (`claude-subscription-directsdk-experimental`, `openai-codex` or `xai-oauth`), login at `create`, start, answer on Discord.
 
 ## Checklist of unverified assumptions
@@ -37,7 +37,7 @@ Tick each one on the VPS; open an issue for any failure.
 - [ ] `hermes --version` works as a non-root user and shows 0.21.5
 - [ ] `git -C /usr/local/lib/hermes-agent rev-parse HEAD` is `f97608f...`; a second `bootstrap` skips the installer
 - [ ] `discord`, `aiohttp`, `brotlicffi`, `honcho` importable from the venv as non-root (`/usr/local/lib/hermes-agent/venv/bin/python -c 'import discord, aiohttp, brotlicffi, honcho'`)
-- [ ] `uv sync --locked` (with `UV_PROJECT_ENVIRONMENT`, uv at `/root/.hermes/bin/uv`) reuses the venv without failing
+- [ ] `uv sync --locked` (with `UV_PROJECT_ENVIRONMENT`, uv found by `bootstrap`, normally `/root/.hermes/bin/uv`) reuses the venv without failing
 - [ ] `/usr/local/share/uv/python` is not group/other-writable
 
 ### First bot
