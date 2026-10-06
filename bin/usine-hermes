@@ -15,12 +15,13 @@ Commands:
   init                 write /etc/usine-hermes/usine.yaml ($USINE_CONFIG overrides)
   config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
-  create <name>        create an isolated profile (not started)
+  create <name> [--personality T] [--mission T] [--provider P]
+                       create an isolated profile (not started)
   start <name>         enable and start a profile
   stop <name>          stop a profile
   restart <name>       restart a profile
   status <name>        show unit state and token presence
-  logs <name>          show redacted logs
+  logs <name> [-n N]   show redacted logs
   list                 list managed profiles
   destroy <name>       remove a profile (asks to type its name)
   doctor [name]        check the whole setup or one profile
@@ -68,10 +69,10 @@ cfg() {
 
 # ask <var> <question> <default>: read one answer from stdin, Enter keeps default.
 ask() {
-  local answer=
+  local _reply=
   printf '%s [%s]: ' "$2" "$3" >&2
-  read -r answer || true
-  printf -v "$1" '%s' "${answer:-$3}"
+  read -r _reply || true
+  printf -v "$1" '%s' "${_reply:-$3}"
 }
 
 cmd_init() {
@@ -169,6 +170,8 @@ bootstrap_hermes() {
     --project "$HERMES_DIR"
   run chown -R root:root "$HERMES_DIR"
   run chmod -R go-w "$HERMES_DIR"
+  # Profiles cannot reach /root; lazy installs as a profile need uv on PATH.
+  run install -m 755 "$ROOT_HERMES_HOME/bin/uv" /usr/local/bin/uv
 }
 
 cmd_bootstrap() {
@@ -179,6 +182,225 @@ cmd_bootstrap() {
   bootstrap_hermes
   # Docker + Honcho go here (issue #5), skipped when `honcho: false`.
   echo "bootstrap done"
+}
+
+# Repo checkout first (tests, ./bin/usine-hermes), then the install.sh location.
+TEMPLATES=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates
+[[ -d $TEMPLATES ]] || TEMPLATES=/usr/local/share/usine-hermes/templates
+
+# Providers create can set up today; subscription logins plug in here (#6).
+API_PROVIDERS="openrouter anthropic openai-api xai gemini deepseek"
+
+# Env var holding the API key of a provider; empty for subscription providers.
+key_var() {
+  case $1 in
+    openrouter) echo OPENROUTER_API_KEY ;;
+    anthropic) echo ANTHROPIC_API_KEY ;;
+    openai-api) echo OPENAI_API_KEY ;;
+    xai) echo XAI_API_KEY ;;
+    gemini) echo GEMINI_API_KEY ;;
+    deepseek) echo DEEPSEEK_API_KEY ;;
+  esac
+}
+
+home_of() { printf '%s/%s' "$(cfg home_root)" "$1"; }
+unit_of() { printf 'usine-%s.service' "$1"; }
+
+# Only profiles carrying our marker are ever touched.
+need_managed() {
+  [[ -f $(home_of "$1")/.usine-hermes ]] || die "$1 is not a managed profile"
+}
+
+# Managed profile names, one per line.
+profiles() {
+  local d
+  for d in "$(cfg home_root)"/*/; do
+    [[ -f $d.usine-hermes ]] && basename "$d"
+  done
+  return 0
+}
+
+# Value of DISCORD_BOT_TOKEN in a profile's .env (empty if unset or unreadable).
+token_of() {
+  awk 'index($0, "DISCORD_BOT_TOKEN=") == 1 { print substr($0, 19); exit }' \
+    "$(home_of "$1")/.hermes/.env" 2>/dev/null || true
+}
+
+token_state() {
+  if [[ ! -r $(home_of "$1")/.hermes/.env ]]; then echo "token=unknown"
+  elif [[ -n $(token_of "$1") ]]; then echo "token=set"
+  else echo "token=empty"; fi
+}
+
+# write_file <mode> <owner> <path> [secret]: stdin to file, umask 077 then
+# chmod/chown. Dry-run prints the target, and the content unless secret.
+write_file() {
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '+ write %s (mode %s, owner %s)\n' "$3" "$1" "$2"
+    if [[ ${4:-} == secret ]]; then cat >/dev/null; else sed 's/^/| /'; fi
+    return
+  fi
+  (umask 077 && cat >"$3")
+  chown "$2" "$3"
+  chmod "$1" "$3"
+}
+
+render() {
+  sed -e "s|__NAME__|$1|g" -e "s|__HOME_ROOT__|$(cfg home_root)|g" \
+    -e "s|__HOME__|$(home_of "$1")|g" "$TEMPLATES/$2"
+}
+
+# Run a command as the profile user inside its own Hermes home.
+as_profile() {
+  local name=$1 home
+  home=$(home_of "$1")
+  shift
+  (cd / && run runuser -u "$name" -- env HOME="$home" HERMES_HOME="$home/.hermes" \
+    HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" PATH=/usr/local/bin:/usr/bin:/bin "$@")
+}
+
+# secret <var> <label>: hidden prompt, Enter leaves it empty.
+secret() {
+  local v=
+  printf '%s (hidden, Enter = leave empty): ' "$2" >&2
+  read -rs v || true
+  printf '\n' >&2
+  printf -v "$1" '%s' "$v"
+}
+
+choose_provider() {
+  local def p i=0 answer
+  def=$(cfg default_provider)
+  [[ " $API_PROVIDERS " == *" $def "* ]] || def=openrouter
+  echo "Providers:" >&2
+  for p in $API_PROVIDERS; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$p" >&2; done
+  ask answer "Provider (number or id)" "$def"
+  if [[ $answer =~ ^[1-9][0-9]*$ ]]; then
+    local -a list
+    read -ra list <<<"$API_PROVIDERS"
+    answer=${list[answer - 1]:-none}
+  fi
+  printf -v "$1" '%s' "$answer"
+}
+
+cmd_create() {
+  local name=$1 personality="" mission="" provider="" home hh unit
+  shift
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --personality | --mission | --provider)
+        [[ $# -ge 2 ]] || die "$1 needs a value" 2
+        printf -v "${1#--}" '%s' "$2"
+        shift 2
+        ;;
+      *) die "unknown flag: $1" 2 ;;
+    esac
+  done
+  need_root create
+  home=$(home_of "$name") hh=$(home_of "$name")/.hermes unit=$(unit_of "$name")
+  if id -u "$name" >/dev/null 2>&1; then
+    [[ -f $home/.usine-hermes ]] && die "profile $name already exists"
+    die "refusing: $name is an existing non-managed Linux user"
+  fi
+
+  [[ -n $provider ]] || choose_provider provider
+  [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
+  local kv
+  kv=$(key_var "$provider")
+  [[ -n $kv ]] || die "$provider: subscription providers are not supported yet"
+  [[ -n $personality ]] || ask personality "Personality" "helpful, concise and friendly"
+  [[ -n $mission ]] || ask mission "Mission" "help the operator with day-to-day tasks"
+
+  # Secrets first so a cancelled prompt leaves nothing half-created.
+  local key="" token=""
+  if [[ $DRY_RUN == 1 ]]; then
+    echo "# would ask (hidden) for $kv and DISCORD_BOT_TOKEN"
+  else
+    secret key "$kv"
+    secret token DISCORD_BOT_TOKEN
+  fi
+
+  run install -d -m 755 "$(cfg home_root)"
+  run useradd --system --user-group --home-dir "$home" --no-create-home \
+    --shell /usr/sbin/nologin "$name"
+  run install -d -m 700 -o "$name" -g "$name" "$home" "$hh" "$home/lazy-packages"
+  run touch "$home/.usine-hermes"
+  printf '# %s\n\n## Personality\n%s\n\n## Mission\n%s\n' "$name" "$personality" "$mission" |
+    write_file 644 "$name:$name" "$hh/SOUL.md"
+
+  as_profile "$name" hermes config set model.provider "$provider"
+  as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
+  # Honcho memory wiring (issue #5) goes here.
+
+  # printf is a builtin: secrets never reach a process argv.
+  printf '%s=%s\nDISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
+    "$kv" "$key" "$token" "$(cfg discord_allowed_users)" |
+    write_file 600 "$name:$name" "$hh/.env" secret
+
+  render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
+  run install -d -m 755 "/etc/systemd/system/$unit.d"
+  render "$name" isolate.conf | write_file 644 root:root "/etc/systemd/system/$unit.d/isolate.conf"
+  run systemctl daemon-reload
+  echo "created $name (not started). Fill empty secrets in $hh/.env, then: usine-hermes start $name"
+}
+
+cmd_start() {
+  local name=$1 token p
+  need_root start
+  need_managed "$name"
+  token=$(token_of "$name")
+  [[ -n $token ]] || die "$name: DISCORD_BOT_TOKEN is empty in $(home_of "$name")/.hermes/.env"
+  for p in $(profiles); do
+    [[ $p != "$name" && $(token_of "$p") == "$token" ]] &&
+      die "$name: Discord token already used by $p"
+  done
+  run systemctl enable --now "$(unit_of "$name")"
+}
+
+# Mask secrets: values from the profile .env, then common token shapes.
+redact() {
+  local envf
+  envf=$(home_of "$1")/.hermes/.env
+  [[ -r $envf ]] || envf=/dev/null
+  awk 'FILENAME == ARGV[1] { i = index($0, "="); v = substr($0, i + 1)
+         if (i && length(v) >= 8) s[v] = 1; next }
+       { for (v in s) while ((i = index($0, v)) > 0)
+           $0 = substr($0, 1, i - 1) "[REDACTED]" substr($0, i + length(v))
+         print }' "$envf" - |
+    sed -E -e 's/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD|token|key|secret|password)[":= ]+)[^ ",]+/\1[REDACTED]/g' \
+      -e 's/(Bearer|Bot) [A-Za-z0-9._-]{16,}/\1 [REDACTED]/g' \
+      -e 's/[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}/[REDACTED]/g'
+}
+
+cmd_status() {
+  need_managed "$1"
+  systemctl status --no-pager "$(unit_of "$1")" | redact "$1" || true
+  token_state "$1"
+}
+
+cmd_logs() {
+  local name=$1 lines=100
+  shift
+  if [[ ${1:-} == -n ]]; then
+    [[ ${2:-} =~ ^[0-9]+$ ]] || die "logs: -n needs a number" 2
+    lines=$2
+  elif [[ $# -gt 0 ]]; then
+    die "unknown flag: $1" 2
+  fi
+  need_managed "$name"
+  if [[ $DRY_RUN == 1 ]]; then
+    run journalctl -u "$(unit_of "$name")" --no-pager -n "$lines"
+  else
+    journalctl -u "$(unit_of "$name")" --no-pager -n "$lines" | redact "$name"
+  fi
+}
+
+cmd_list() {
+  local p state
+  for p in $(profiles); do
+    state=$(systemctl is-active "$(unit_of "$p")" 2>/dev/null) || true
+    printf '%-24s %-10s %s\n' "$p" "${state:-unknown}" "$(token_state "$p")"
+  done
 }
 
 main() {
@@ -193,14 +415,21 @@ main() {
   shift || true
   case $cmd in
     help | -h | --help) usage ;;
-    create | start | stop | restart | status | logs | destroy)
-      check_name "${1:-}"
-      die "$cmd: not implemented yet"
+    create | start | stop | restart | status | logs | destroy) check_name "${1:-}" ;;&
+    create) cmd_create "$@" ;;
+    start) cmd_start "$1" ;;
+    stop | restart)
+      need_root "$cmd"
+      need_managed "$1"
+      run systemctl "$cmd" "$(unit_of "$1")"
       ;;
+    status) cmd_status "$1" ;;
+    logs) cmd_logs "$@" ;;
+    list) cmd_list ;;
     init) cmd_init ;;
     config) cfg "${1:?usage: usine-hermes config <key>}" ;;
     bootstrap) cmd_bootstrap ;;
-    list | doctor) die "$cmd: not implemented yet" ;;
+    destroy | doctor) die "$cmd: not implemented yet" ;;
     *) die "unknown command: $cmd (see 'usine-hermes help')" 2 ;;
   esac
 }

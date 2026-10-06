@@ -1,0 +1,28 @@
+# Hermes gateway for one usine-hermes profile (rendered by `usine-hermes create`).
+[Unit]
+Description=Hermes Agent gateway for profile __NAME__
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__NAME__
+Group=__NAME__
+Environment=HOME=__HOME__
+Environment=HERMES_HOME=__HOME__/.hermes
+Environment=HERMES_LAZY_INSTALL_TARGET=__HOME__/lazy-packages
+Environment=HERMES_ACCEPT_HOOKS=1
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=__HOME__
+ExecStart=/usr/local/bin/hermes gateway run --external-supervisor
+ExecReload=/bin/kill -USR1 $MAINPID
+# Upstream semantics: 75 = restart requested, 78 = config refusal (no loop).
+Restart=always
+RestartSec=5
+RestartForceExitStatus=75
+RestartPreventExitStatus=78
+KillMode=mixed
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

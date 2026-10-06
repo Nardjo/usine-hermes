@@ -5,6 +5,7 @@ set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 cli="$root/bin/usine-hermes"
 fails=0
+exec </dev/null # no test may wait on a terminal
 
 ok() { printf 'ok   %s\n' "$1"; }
 ko() { printf 'FAIL %s\n' "$1"; fails=$((fails + 1)); }
@@ -106,6 +107,81 @@ if [[ $EUID -ne 0 ]]; then
   expect "bootstrap: non-root refused" 1 "must run as root" -- \
     env USINE_CONFIG="$root/usine.example.yaml" "$cli" bootstrap
 fi
+
+# create --dry-run: full plan, no root, no secret prompt, nothing started.
+cr() { env USINE_CONFIG="$root/usine.example.yaml" "$cli" create "$@" --dry-run; }
+crf() { cr ab --personality "dry wit" --mission "watch the logs" --provider anthropic; }
+expect "create: system nologin user + own group" 0 \
+  "useradd --system --user-group --home-dir /var/lib/usine-hermes/ab --no-create-home --shell /usr/sbin/nologin ab" -- crf
+expect "create: private home 700 owned by profile" 0 "install -d -m 700 -o ab -g ab /var/lib/usine-hermes/ab" -- crf
+expect "create: ownership marker" 0 "/var/lib/usine-hermes/ab/\.usine-hermes" -- crf
+expect "create: SOUL.md with personality" 0 "^\| .*dry wit" -- crf
+expect "create: SOUL.md with mission" 0 "^\| .*watch the logs" -- crf
+expect "create: .env 600 owned by profile" 0 \
+  "write /var/lib/usine-hermes/ab/\.hermes/\.env \(mode 600, owner ab:ab\)" -- crf
+expect "create: provider set as profile user" 0 \
+  "runuser -u ab -- .*hermes config set model\.provider anthropic" -- crf
+expect "create: default model from config" 0 "hermes config set model\.default claude-sonnet-4-6" -- crf
+expect "create: unit installed" 0 "write /etc/systemd/system/usine-ab\.service" -- crf
+expect "create: unit runs gateway as profile" 0 "^\| User=ab$" -- crf
+expect "create: unit uses external supervisor" 0 "hermes gateway run --external-supervisor" -- crf
+expect "create: unit sets HERMES_HOME" 0 "HERMES_HOME=/var/lib/usine-hermes/ab/\.hermes" -- crf
+expect "create: unit sets lazy-install target" 0 "HERMES_LAZY_INSTALL_TARGET=/var/lib/usine-hermes/ab/lazy-packages" -- crf
+expect "create: isolation drop-in installed" 0 "write /etc/systemd/system/usine-ab\.service\.d/isolate\.conf" -- crf
+expect "create: drop-in strict + home bound" 0 "^\| BindPaths=/var/lib/usine-hermes/ab$" -- crf
+expect "create: drop-in hides other processes" 0 "^\| ProtectProc=invisible$" -- crf
+expect "create: daemon-reload" 0 "systemctl daemon-reload" -- crf
+expect "create: says not started" 0 "not started" -- crf
+if crf 2>&1 | grep -qE "systemctl (enable|start)"; then ko "create: never enables/starts"; else ok "create: never enables/starts"; fi
+if crf 2>&1 | grep -qE "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
+expect "create: prompts menu with defaults (no flags)" 0 "model\.provider openrouter" -- cr ab
+expect "create: menu accepts a number" 0 "model\.provider xai" -- cr ab <<<"4"
+expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
+expect "create: subscription provider not yet" 1 "not supported yet" -- cr ab --provider openai-codex
+expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
+expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
+if [[ $EUID -ne 0 ]]; then
+  expect "create: non-root refused" 1 "must run as root" -- \
+    env USINE_CONFIG="$root/usine.example.yaml" "$cli" create ab --provider anthropic </dev/null
+fi
+
+# Lifecycle against a fake home_root; systemctl/journalctl stubbed on PATH.
+hr="$tmp/homes"; lcfg="$tmp/life.yaml"
+sed "s|^home_root:.*|home_root: $hr|" "$root/usine.example.yaml" >"$lcfg"
+mkprof() { mkdir -p "$hr/$1/.hermes"; : >"$hr/$1/.usine-hermes"; printf 'DISCORD_BOT_TOKEN=%s\nOPENROUTER_API_KEY=%s\n' "$2" "$3" >"$hr/$1/.hermes/.env"; }
+mkprof alpha "" ""
+mkprof beta "tok.beta.1234567890" "sk-or-beta-secret"
+mkprof gamma "tok.beta.1234567890" ""
+mkprof delta "tok.delta.0987654321" "sk-or-delta-secret"
+mkdir -p "$hr/stranger" "$tmp/stub"
+cat >"$tmp/stub/systemctl" <<'EOF'
+#!/bin/sh
+[ "$1" = is-active ] || echo "systemctl $*"
+echo active
+EOF
+cat >"$tmp/stub/journalctl" <<'EOF'
+#!/bin/sh
+echo "login ok token tok.delta.0987654321 key=sk-or-delta-secret"
+echo "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"
+EOF
+chmod +x "$tmp/stub/"*
+lc() { env USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" "$@"; }
+expect "start: empty token refused" 1 "empty" -- lc start alpha --dry-run
+expect "start: duplicate token refused" 1 "already used by beta" -- lc start gamma --dry-run
+expect "start: unmanaged profile refused" 1 "not a managed profile" -- lc start stranger --dry-run
+expect "start: enables and starts" 0 "systemctl enable --now usine-delta\.service" -- lc start delta --dry-run
+expect "stop: stops unit" 0 "systemctl stop usine-delta\.service" -- lc stop delta --dry-run
+expect "restart: restarts unit" 0 "systemctl restart usine-delta\.service" -- lc restart delta --dry-run
+expect "list: managed profiles only" 0 "^delta +active +token=set" -- lc list
+if lc list 2>&1 | grep -q stranger; then ko "list: hides non-managed dirs"; else ok "list: hides non-managed dirs"; fi
+expect "list: empty token shown" 0 "^alpha +active +token=empty" -- lc list
+expect "status: unit state + token" 0 "token=set" -- lc status delta
+expect "logs: journal of the unit" 0 "login ok" -- lc logs delta
+if lc logs delta 2>&1 | grep -qE "tok\.delta|sk-or-delta|abcdefghijklmnop"; then ko "logs: secrets redacted"; else ok "logs: secrets redacted"; fi
+if [[ $EUID -ne 0 ]]; then
+  expect "start: non-root refused" 1 "must run as root" -- lc start delta
+fi
+expect "bootstrap: uv reachable by profiles" 0 "install -m 755 /root/\.hermes/bin/uv /usr/local/bin/uv" -- bs
 
 # Lint: every shell file must pass shellcheck.
 if command -v shellcheck >/dev/null; then
