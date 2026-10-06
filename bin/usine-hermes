@@ -180,22 +180,96 @@ bootstrap_hermes() {
   run install -m 755 "$ROOT_HERMES_HOME/bin/uv" /usr/local/bin/uv
 }
 
+HONCHO_DIR=/opt/usine-hermes/honcho
+
+# Docker from Docker's official apt repo (compose v2.24+ needed by Honcho).
+bootstrap_docker() {
+  if [[ $DRY_RUN == 0 ]] && docker compose version >/dev/null 2>&1; then
+    echo "Docker with compose already installed"
+  else
+    local id="<os-id>" codename="<codename>" arch="<arch>"
+    if [[ $DRY_RUN == 0 ]]; then
+      # shellcheck source=/dev/null
+      read -r id codename < <(. "${USINE_OS_RELEASE:-/etc/os-release}" && echo "$ID $VERSION_CODENAME")
+      arch=$(dpkg --print-architecture)
+    fi
+    run install -m 755 -d /etc/apt/keyrings
+    run curl -fsSL -o /etc/apt/keyrings/docker.asc "https://download.docker.com/linux/$id/gpg"
+    run chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$id $codename stable" |
+      write_file 644 root:root /etc/apt/sources.list.d/docker.list
+    run apt-get update
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  fi
+  run systemctl enable --now docker
+}
+
+# Honcho stack in $HONCHO_DIR. Its .env keeps the DB password and the
+# OpenRouter key across re-runs, so the key is asked only once.
+bootstrap_honcho() {
+  local envf=$HONCHO_DIR/.env pw="" key="" m=openai/gpt-5.4-mini l url i
+  if [[ -r $envf ]]; then
+    pw=$(awk 'index($0, "POSTGRES_PASSWORD=") == 1 { print substr($0, 19) }' "$envf")
+    key=$(awk 'index($0, "LLM_OPENAI_API_KEY=") == 1 { print substr($0, 20) }' "$envf")
+  fi
+  # Hex: safe inside the connection URI without encoding.
+  [[ -n $pw ]] || pw=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+  if [[ -z $key ]]; then
+    if [[ $DRY_RUN == 1 ]]; then
+      echo "# would ask (hidden) for the OpenRouter key used by Honcho"
+    else
+      secret key "OpenRouter API key for Honcho"
+      [[ -n $key ]] || die "Honcho needs an OpenRouter key (or set honcho: false)"
+    fi
+  fi
+
+  run install -d -m 700 "$HONCHO_DIR"
+  run install -m 644 "$TEMPLATES/honcho-compose.yml" "$HONCHO_DIR/docker-compose.yml"
+  echo 'CREATE EXTENSION IF NOT EXISTS vector;' | write_file 644 root:root "$HONCHO_DIR/init.sql"
+  # printf is a builtin: secrets never reach a process argv.
+  {
+    printf 'POSTGRES_PASSWORD=%s\nAUTH_USE_AUTH=false\n' "$pw"
+    printf 'LLM_OPENAI_API_KEY=%s\nLLM_OPENAI_BASE_URL=https://openrouter.ai/api/v1\n' "$key"
+    printf '%s=%s\n' DERIVER_MODEL_CONFIG__MODEL "$m" SUMMARY_MODEL_CONFIG__MODEL "$m" \
+      DREAM_DEDUCTION_MODEL_CONFIG__MODEL "$m" DREAM_INDUCTION_MODEL_CONFIG__MODEL "$m"
+    for l in minimal low medium high max; do
+      printf 'DIALECTIC_LEVELS__%s__MODEL_CONFIG__MODEL=%s\n' "$l" "$m"
+    done
+    printf 'EMBEDDING_MODEL_CONFIG__MODEL=openai/text-embedding-3-small\n'
+    printf 'EMBEDDING_MODEL_CONFIG__TRANSPORT=openai\n'
+    printf 'EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=https://openrouter.ai/api/v1\n'
+  } | write_file 600 root:root "$envf" secret
+  run docker compose -f "$HONCHO_DIR/docker-compose.yml" up -d
+
+  url=$(cfg honcho_url)/health
+  if [[ $DRY_RUN == 1 ]]; then
+    echo "# wait up to 180s for: curl -fsS $url"
+    return
+  fi
+  for ((i = 0; i < 90; i++)); do
+    curl -fsS "$url" >/dev/null 2>&1 && { echo "Honcho healthy"; return; }
+    sleep 2
+  done
+  die "Honcho not healthy after 180s (see: docker compose -f $HONCHO_DIR/docker-compose.yml logs)"
+}
+
 cmd_bootstrap() {
   need_root bootstrap
   need_os
   run apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y git curl tar coreutils ca-certificates
   bootstrap_hermes
-  # Docker + Honcho go here (issue #5), skipped when `honcho: false`.
+  if [[ $(cfg honcho) == true ]]; then
+    bootstrap_docker
+    bootstrap_honcho
+  fi
   echo "bootstrap done"
 }
 
 # Repo checkout first (tests, ./bin/usine-hermes), then the install.sh location.
 TEMPLATES=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates
 [[ -d $TEMPLATES ]] || TEMPLATES=/usr/local/share/usine-hermes/templates
-
-# Providers create can set up today; subscription logins plug in here (#6).
-API_PROVIDERS="openrouter anthropic openai-api xai gemini deepseek"
 
 # Env var holding the API key of a provider; empty for subscription providers.
 key_var() {
@@ -262,7 +336,32 @@ as_profile() {
   home=$(home_of "$1")
   shift
   (cd / && run runuser -u "$name" -- env HOME="$home" HERMES_HOME="$home/.hermes" \
-    HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" PATH=/usr/local/bin:/usr/bin:/bin "$@")
+    HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" \
+    PATH="$home/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@")
+}
+
+# Limits shown before a subscription login.
+sub_warning() {
+  case $1 in
+    claude-subscription-directsdk-experimental)
+      echo "Claude subscription runs through Hermes' experimental claude-subscription-directsdk plugin:"
+      echo "it may break on upgrades, bills your Agent SDK allowance (~1.7x a normal session),"
+      echo "needs a Max plan plus extra-usage credits, and refuses ANTHROPIC_* variables in .env." ;;
+    openai-codex)
+      echo "ChatGPT subscription (openai-codex): the plan quota for agent use is undocumented;"
+      echo "a busy bot may hit limits without notice." ;;
+    xai-oauth)
+      echo "SuperGrok subscription (xai-oauth): some SuperGrok tiers answer 403;"
+      echo "check your plan if the bot only gets refusals." ;;
+  esac
+}
+
+# Interactive login as the profile user (device or paste code, no browser on the VPS).
+sub_login() {
+  case $2 in
+    claude-subscription-directsdk-experimental) as_profile "$1" claude auth login ;;
+    *) as_profile "$1" hermes auth add "$2" ;;
+  esac
 }
 
 # secret <var> <label>: hidden prompt, Enter leaves it empty.
@@ -277,13 +376,13 @@ secret() {
 choose_provider() {
   local def p i=0 answer
   def=$(cfg default_provider)
-  [[ " $API_PROVIDERS " == *" $def "* ]] || def=openrouter
+  [[ " $PROVIDERS " == *" $def "* ]] || def=openrouter
   echo "Providers:" >&2
-  for p in $API_PROVIDERS; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$p" >&2; done
+  for p in $PROVIDERS; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$p" >&2; done
   ask answer "Provider (number or id)" "$def"
   if [[ $answer =~ ^[1-9][0-9]*$ ]]; then
     local -a list
-    read -ra list <<<"$API_PROVIDERS"
+    read -ra list <<<"$PROVIDERS"
     answer=${list[answer - 1]:-none}
   fi
   printf -v "$1" '%s' "$answer"
@@ -311,18 +410,22 @@ cmd_create() {
 
   [[ -n $provider ]] || choose_provider provider
   [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
-  local kv
+  local kv login=n
   kv=$(key_var "$provider")
-  [[ -n $kv ]] || die "$provider: subscription providers are not supported yet"
   [[ -n $personality ]] || ask personality "Personality" "helpful, concise and friendly"
   [[ -n $mission ]] || ask mission "Mission" "help the operator with day-to-day tasks"
+  if [[ -z $kv ]]; then
+    sub_warning "$provider" >&2
+    echo "The login runs as Linux user $name; its tokens stay in $home." >&2
+    ask login "Log in now?" n
+  fi
 
   # Secrets first so a cancelled prompt leaves nothing half-created.
   local key="" token=""
   if [[ $DRY_RUN == 1 ]]; then
-    echo "# would ask (hidden) for $kv and DISCORD_BOT_TOKEN"
+    echo "# would ask (hidden) for ${kv:+$kv and }DISCORD_BOT_TOKEN"
   else
-    secret key "$kv"
+    [[ -z $kv ]] || secret key "$kv"
     secret token DISCORD_BOT_TOKEN
   fi
 
@@ -336,17 +439,41 @@ cmd_create() {
 
   as_profile "$name" hermes config set model.provider "$provider"
   as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
-  # Honcho memory wiring (issue #5) goes here.
+  if [[ $(cfg honcho) == true ]]; then
+    local url
+    url=$(cfg honcho_url)
+    # Get-or-create: safe to repeat.
+    run curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
+      -d "{\"id\":\"$name\"}" "$url/v3/workspaces"
+    printf '{\n  "baseUrl": "%s",\n  "hosts": {\n    "hermes": {\n      "enabled": true,\n      "workspace": "%s",\n      "aiPeer": "%s",\n      "peerName": "%s"\n    }\n  }\n}\n' \
+      "$url" "$name" "$name" "$(cfg peer_name)" | write_file 600 "$name:$name" "$hh/honcho.json"
+    as_profile "$name" hermes config set memory.provider honcho
+  fi
 
-  # printf is a builtin: secrets never reach a process argv.
-  printf '%s=%s\nDISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
-    "$kv" "$key" "$token" "$(cfg discord_allowed_users)" |
+  if [[ $provider == claude-subscription-directsdk-experimental ]]; then
+    # Native installer puts claude in ~/.local/bin of the profile.
+    as_profile "$name" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+    as_profile "$name" hermes plugins install claude-subscription-directsdk
+  fi
+
+  # printf is a builtin: secrets never reach a process argv. No key line for
+  # subscriptions (the Claude plugin refuses ANTHROPIC_* in .env).
+  { [[ -z $kv ]] || printf '%s=%s\n' "$kv" "$key"
+    printf 'DISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
+      "$token" "$(cfg discord_allowed_users)"; } |
     write_file 600 "$name:$name" "$hh/.env" secret
 
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
   render "$name" isolate.conf | write_file 644 root:root "/etc/systemd/system/$unit.d/isolate.conf"
   run systemctl daemon-reload
+  if [[ -n $kv ]]; then :
+  elif [[ $login == [yY]* ]]; then
+    sub_login "$name" "$provider"
+  else
+    echo "Login skipped. Run it later as root:"
+    DRY_RUN=1 sub_login "$name" "$provider" | sed 's/^+ /  sudo /'
+  fi
   echo "created $name (not started). Fill empty secrets in $hh/.env, then: usine-hermes start $name"
 }
 

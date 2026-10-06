@@ -135,9 +135,28 @@ expect "create: says not started" 0 "not started" -- crf
 if crf 2>&1 | grep -qE "systemctl (enable|start)"; then ko "create: never enables/starts"; else ok "create: never enables/starts"; fi
 if crf 2>&1 | grep -qE "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
 expect "create: prompts menu with defaults (no flags)" 0 "model\.provider openrouter" -- cr ab
-expect "create: menu accepts a number" 0 "model\.provider xai" -- cr ab <<<"4"
+expect "create: menu accepts a number" 0 "model\.provider xai" -- cr ab <<<"6"
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
-expect "create: subscription provider not yet" 1 "not supported yet" -- cr ab --provider openai-codex
+# Subscription providers: warning, y/N login as the profile user, or a follow-up command.
+sub() { cr ab --personality p --mission m --provider "$@"; }
+claude="claude-subscription-directsdk-experimental"
+expect "sub: claude warns experimental" 0 "1\.7x" -- sub $claude
+expect "sub: codex warns quota" 0 "quota" -- sub openai-codex
+expect "sub: supergrok warns 403" 0 "403" -- sub xai-oauth
+expect "sub: claude provider set" 0 "hermes config set model\.provider $claude" -- sub $claude
+expect "sub: claude model from config" 0 "hermes config set model\.default sonnet" -- sub $claude
+expect "sub: claude CLI installed as profile" 0 "runuser -u ab -- .*claude\.ai/install\.sh" -- sub $claude
+expect "sub: plugin installed as profile" 0 \
+  "runuser -u ab -- .*hermes plugins install claude-subscription-directsdk" -- sub $claude
+expect "sub: claude login as profile on y" 0 "^\+ runuser -u ab -- .*HOME=/var/lib/usine-hermes/ab .*claude auth login" -- sub $claude <<<"y"
+expect "sub: codex login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex <<<"y"
+expect "sub: supergrok login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add xai-oauth" -- sub xai-oauth <<<"y"
+expect "sub: skip prints follow-up command" 0 "later.*" -- sub openai-codex
+expect "sub: follow-up is the login as profile" 0 "^ *sudo runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex
+if sub openai-codex 2>&1 | grep -q "^+ .*auth add"; then ko "sub: skip runs no login"; else ok "sub: skip runs no login"; fi
+if sub $claude 2>&1 | grep -qE "API_KEY|ANTHROPIC"; then ko "sub: no API key asked or written"; else ok "sub: no API key asked or written"; fi
+expect "sub: menu offers subscriptions" 0 "openai-codex" -- cr ab --personality p --mission m <<<"5"
+expect "sub: unit PATH finds the profile's claude CLI" 0 "^\| Environment=PATH=/var/lib/usine-hermes/ab/\.local/bin:" -- sub $claude
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
 expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
 if [[ $EUID -ne 0 ]]; then
@@ -248,9 +267,46 @@ expect "doctor: readable .env of another profile fails" 1 "^alpha +cannot-read-d
 expect "doctor: hermes off pin fails" 1 "^hermes +FAIL" -- dr STUB_HEAD=deadbeef delta
 expect "doctor: honcho down fails" 1 "^honcho +FAIL" -- dr STUB_HONCHO_DOWN=1 delta
 expect "doctor: loose .env mode fails" 1 "^delta +env +FAIL" -- dr STUB_ENV_MODE=644 delta
-sed 's/^honcho:.*/honcho: false/' "$lcfg" >"$tmp/nohoncho.yaml"
-expect "doctor: honcho skipped when disabled" 0 "" -- dr STUB_HONCHO_DOWN=1 USINE_CONFIG="$tmp/nohoncho.yaml" delta
+sed 's/^honcho:.*/honcho: false/' "$lcfg" >"$tmp/life-nohoncho.yaml"
+expect "doctor: honcho skipped when disabled" 0 "" -- dr STUB_HONCHO_DOWN=1 USINE_CONFIG="$tmp/life-nohoncho.yaml" delta
 expect "doctor: unmanaged profile refused" 1 "not a managed profile" -- dr stranger
+
+# Honcho (on in the example config): Docker from the official repo + compose stack.
+nocfg="$tmp/nohoncho.yaml"
+sed "s|^honcho:.*|honcho: false|" "$root/usine.example.yaml" >"$nocfg"
+bsn() { env USINE_CONFIG="$nocfg" "$cli" bootstrap --dry-run; }
+expect "bootstrap: Docker apt repo key" 0 "download\.docker\.com/linux/.*/gpg" -- bs
+expect "bootstrap: Docker official repo listed" 0 "write /etc/apt/sources\.list\.d/docker\.list" -- bs
+expect "bootstrap: Docker packages" 0 "apt-get install -y docker-ce docker-ce-cli containerd\.io docker-compose-plugin" -- bs
+expect "bootstrap: Docker enabled at boot" 0 "systemctl enable --now docker" -- bs
+expect "bootstrap: Honcho compose installed" 0 "/opt/usine-hermes/honcho/docker-compose\.yml" -- bs
+expect "bootstrap: Honcho .env root 600" 0 \
+  "write /opt/usine-hermes/honcho/\.env \(mode 600, owner root:root\)" -- bs
+expect "bootstrap: Honcho key asked hidden, not in dry-run" 0 "would ask \(hidden\).*OpenRouter" -- bs
+expect "bootstrap: Honcho up -d" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- bs
+expect "bootstrap: waits for Honcho health" 0 "http://127\.0\.0\.1:8000/health" -- bs
+if bs 2>&1 | grep -qE "LLM_OPENAI_API_KEY=|POSTGRES_PASSWORD="; then ko "bootstrap: Honcho secrets not printed"; else ok "bootstrap: Honcho secrets not printed"; fi
+if bsn 2>&1 | grep -qE "docker|/opt/usine-hermes"; then ko "bootstrap: honcho false skips Docker/Honcho"; else ok "bootstrap: honcho false skips Docker/Honcho"; fi
+expect "bootstrap: honcho false still installs Hermes" 0 "hermes-agent" -- bsn
+c="$root/templates/honcho-compose.yml"
+expect "compose: pinned Honcho image" 0 "image: ghcr\.io/plastic-labs/honcho:v3\.2\.2" -- cat "$c"
+expect "compose: api only on loopback" 0 "127\.0\.0\.1:8000:8000" -- cat "$c"
+if grep -E '^ *- "?[0-9.:]*[0-9]+:[0-9]+"?$' "$c" | grep -v '127\.0\.0\.1:8000:8000' | grep -q .; then ko "compose: no other published port"; else ok "compose: no other published port"; fi
+if grep -qE "mcp|HOST_AUTH_METHOD|postgres:postgres@" "$c"; then ko "compose: no mcp, trust or default password"; else ok "compose: no mcp, trust or default password"; fi
+expect "compose: generated db password wired" 0 "postgres:\\$\{POSTGRES_PASSWORD" -- cat "$c"
+expect "compose: restarts after reboot" 0 "restart: unless-stopped" -- cat "$c"
+
+# create wires Honcho memory only when enabled.
+crn() { env USINE_CONFIG="$nocfg" "$cli" create ab --provider anthropic --dry-run; }
+expect "create: Honcho workspace created" 0 "curl .*-X POST.*127\.0\.0\.1:8000/v3/workspaces" -- crf
+expect "create: workspace id is the profile" 0 'id\\?":\\?"ab' -- crf
+expect "create: honcho.json owned by profile" 0 \
+  "write /var/lib/usine-hermes/ab/\.hermes/honcho\.json \(mode 600, owner ab:ab\)" -- crf
+expect "create: honcho.json points at workspace" 0 '"workspace": *"ab"' -- crf
+expect "create: honcho.json peer name" 0 '"peerName": *"owner"' -- crf
+expect "create: memory provider set as profile" 0 \
+  "runuser -u ab -- .*hermes config set memory\.provider honcho" -- crf
+if crn 2>&1 | grep -qiE "honcho|workspaces"; then ko "create: honcho false skips memory"; else ok "create: honcho false skips memory"; fi
 expect "bootstrap: uv reachable by profiles" 0 "install -m 755 /root/\.hermes/bin/uv /usr/local/bin/uv" -- bs
 
 # Lint: every shell file must pass shellcheck.
