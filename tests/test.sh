@@ -138,8 +138,9 @@ expect "create: system nologin user + own group" 0 \
   "useradd --system --user-group --home-dir /var/lib/usine-hermes/ab --no-create-home --shell /usr/sbin/nologin ab" -- crf
 expect "create: private home 700 owned by profile" 0 "install -d -m 700 -o ab -g ab /var/lib/usine-hermes/ab" -- crf
 # Root-owned registry next to the config (here the repo root), right after useradd.
-expect "create: ownership marker in root registry" 0 "install -m 644 -o root -g root /dev/null $root/profiles/ab$" -- crf
-if crf 2>&1 | grep -A2 "useradd" | grep -c >/dev/null "profiles/ab$"; then ok "create: marker right after useradd"; else ko "create: marker right after useradd"; fi
+expect "create: ownership marker in root registry" 0 "write $root/profiles/ab \(mode 644, owner root:root\)" -- crf
+expect "create: marker records the provider" 0 "^\| provider=anthropic$" -- crf
+if crf 2>&1 | grep -A2 "useradd" | grep -c >/dev/null "profiles/ab "; then ok "create: marker right after useradd"; else ko "create: marker right after useradd"; fi
 if crf 2>&1 | grep -c >/dev/null "lib/usine-hermes/ab/\.usine-hermes"; then ko "create: no marker in profile home"; else ok "create: no marker in profile home"; fi
 expect "create: SOUL.md with personality" 0 "^\| .*dry wit" -- crf
 expect "create: SOUL.md with mission" 0 "^\| .*watch the logs" -- crf
@@ -202,7 +203,7 @@ fi
 # Lifecycle against a fake home_root; systemctl/journalctl stubbed on PATH.
 hr="$tmp/homes"; lcfg="$tmp/life.yaml"
 sed "s|^home_root:.*|home_root: $hr|" "$root/usine.example.yaml" >"$lcfg"
-mkprof() { mkdir -p "$hr/$1/.hermes" "$tmp/profiles"; : >"$tmp/profiles/$1"; printf 'DISCORD_BOT_TOKEN=%s\nOPENROUTER_API_KEY=%s\n' "$2" "$3" >"$hr/$1/.hermes/.env"; }
+mkprof() { mkdir -p "$hr/$1/.hermes" "$tmp/profiles"; echo "provider=${4:-openrouter}" >"$tmp/profiles/$1"; printf 'DISCORD_BOT_TOKEN=%s\nOPENROUTER_API_KEY=%s\n' "$2" "$3" >"$hr/$1/.hermes/.env"; }
 mkprof alpha "" ""
 mkprof beta "tok.beta.1234567890" "sk-or-beta-secret"
 mkprof gamma "tok.beta.1234567890" ""
@@ -269,7 +270,11 @@ expect "secret: hidden prompt names key and profile" 0 "DISCORD_BOT_TOKEN for de
 expect "secret: .env rewritten 600 owned by profile" 0 \
   "write $hr/delta/\.hermes/\.env \(mode 600, owner delta:delta\)" -- sec delta DISCORD_BOT_TOKEN new.token.123456
 expect "secret: replaces an existing key" 0 "^# \.env keys: OPENROUTER_API_KEY DISCORD_BOT_TOKEN$" -- sec delta DISCORD_BOT_TOKEN new.token.123456
-expect "secret: appends a missing key" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY XAI_API_KEY$" -- sec alpha XAI_API_KEY xai-new-secret
+mkprof epsilon "" "" xai
+expect "secret: appends a missing key" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY XAI_API_KEY$" -- sec epsilon XAI_API_KEY xai-new-secret
+expect "secret: other provider's key refused" 2 "unknown key.*allowed: DISCORD_BOT_TOKEN OPENROUTER_API_KEY\)$" -- sec delta XAI_API_KEY x
+mkprof zeta "" "" openai-codex
+expect "secret: subscription profile takes only the token" 2 "allowed: DISCORD_BOT_TOKEN\)$" -- sec zeta OPENAI_API_KEY x
 if sec delta OPENROUTER_API_KEY sk-or-new-secret 2>&1 | grep -cE >/dev/null "sk-or-|tok\.delta"; then ko "secret: values never printed"; else ok "secret: values never printed"; fi
 expect "secret: empty value refused" 1 "empty" -- sec delta DISCORD_BOT_TOKEN ""
 expect "secret: restart hint when active" 0 "usine-hermes restart delta" -- sec delta DISCORD_BOT_TOKEN new.token.123456

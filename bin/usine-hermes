@@ -351,6 +351,9 @@ profiles() {
   return 0
 }
 
+# Provider recorded at create time in the root-owned marker.
+provider_of() { env_get "$REGISTRY/$1" provider; }
+
 token_of() { env_get "$(env_file "$1")" DISCORD_BOT_TOKEN; }
 
 token_state() {
@@ -487,7 +490,7 @@ cmd_create() {
     --shell /usr/sbin/nologin "$name"
   # Marker right after useradd, so even a failed create can be destroyed.
   run install -d -m 755 -o root -g root "$REGISTRY"
-  run install -m 644 -o root -g root /dev/null "$REGISTRY/$name"
+  echo "provider=$provider" | write_file 644 root:root "$REGISTRY/$name"
   run install -d -m 700 -o "$name" -g "$name" "$home" "$hermes_home" "$home/lazy-packages"
   printf '# %s\n\n## Personality\n%s\n\n## Mission\n%s\n' "$name" "$personality" "$mission" |
     write_file 644 "$name:$name" "$hermes_home/SOUL.md"
@@ -564,19 +567,19 @@ redact() {
       -e 's/[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}/[REDACTED]/g'
 }
 
-# Keys `secret` may set: the Discord token and every provider API key.
+# Keys `secret` may set on a profile: the Discord token and the API key of
+# its own provider (none for subscriptions).
 secret_keys() {
-  local p
   echo DISCORD_BOT_TOKEN
-  for p in $PROVIDERS; do key_var "$p"; done
+  key_var "$(provider_of "$1")"
 }
 
 cmd_secret() {
   local name=$1 key=${2:-}
-  grep -qxF -- "$key" <(secret_keys) ||
-    die "unknown key: '$key' (allowed: $(secret_keys | tr '\n' ' '))" 2
-  need_root secret
   need_managed "$name"
+  grep -qxF -- "$key" <(secret_keys "$name") ||
+    die "unknown key: '$key' (allowed: $(secret_keys "$name" | paste -sd' ' -))" 2
+  need_root secret
   local env value old new
   env=$(env_file "$name")
   secret value "$key for $name"
