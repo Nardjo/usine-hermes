@@ -188,9 +188,6 @@ cmd_bootstrap() {
 TEMPLATES=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates
 [[ -d $TEMPLATES ]] || TEMPLATES=/usr/local/share/usine-hermes/templates
 
-# Providers create can set up today; subscription logins plug in here (#6).
-API_PROVIDERS="openrouter anthropic openai-api xai gemini deepseek"
-
 # Env var holding the API key of a provider; empty for subscription providers.
 key_var() {
   case $1 in
@@ -256,7 +253,32 @@ as_profile() {
   home=$(home_of "$1")
   shift
   (cd / && run runuser -u "$name" -- env HOME="$home" HERMES_HOME="$home/.hermes" \
-    HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" PATH=/usr/local/bin:/usr/bin:/bin "$@")
+    HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" \
+    PATH="$home/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@")
+}
+
+# Limits shown before a subscription login.
+sub_warning() {
+  case $1 in
+    claude-subscription-directsdk-experimental)
+      echo "Claude subscription runs through Hermes' experimental claude-subscription-directsdk plugin:"
+      echo "it may break on upgrades, bills your Agent SDK allowance (~1.7x a normal session),"
+      echo "needs a Max plan plus extra-usage credits, and refuses ANTHROPIC_* variables in .env." ;;
+    openai-codex)
+      echo "ChatGPT subscription (openai-codex): the plan quota for agent use is undocumented;"
+      echo "a busy bot may hit limits without notice." ;;
+    xai-oauth)
+      echo "SuperGrok subscription (xai-oauth): some SuperGrok tiers answer 403;"
+      echo "check your plan if the bot only gets refusals." ;;
+  esac
+}
+
+# Interactive login as the profile user (device or paste code, no browser on the VPS).
+sub_login() {
+  case $2 in
+    claude-subscription-directsdk-experimental) as_profile "$1" claude auth login ;;
+    *) as_profile "$1" hermes auth add "$2" ;;
+  esac
 }
 
 # secret <var> <label>: hidden prompt, Enter leaves it empty.
@@ -271,13 +293,13 @@ secret() {
 choose_provider() {
   local def p i=0 answer
   def=$(cfg default_provider)
-  [[ " $API_PROVIDERS " == *" $def "* ]] || def=openrouter
+  [[ " $PROVIDERS " == *" $def "* ]] || def=openrouter
   echo "Providers:" >&2
-  for p in $API_PROVIDERS; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$p" >&2; done
+  for p in $PROVIDERS; do i=$((i + 1)); printf '  %d) %s\n' "$i" "$p" >&2; done
   ask answer "Provider (number or id)" "$def"
   if [[ $answer =~ ^[1-9][0-9]*$ ]]; then
     local -a list
-    read -ra list <<<"$API_PROVIDERS"
+    read -ra list <<<"$PROVIDERS"
     answer=${list[answer - 1]:-none}
   fi
   printf -v "$1" '%s' "$answer"
@@ -305,18 +327,22 @@ cmd_create() {
 
   [[ -n $provider ]] || choose_provider provider
   [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
-  local kv
+  local kv login=n
   kv=$(key_var "$provider")
-  [[ -n $kv ]] || die "$provider: subscription providers are not supported yet"
   [[ -n $personality ]] || ask personality "Personality" "helpful, concise and friendly"
   [[ -n $mission ]] || ask mission "Mission" "help the operator with day-to-day tasks"
+  if [[ -z $kv ]]; then
+    sub_warning "$provider" >&2
+    echo "The login runs as Linux user $name; its tokens stay in $home." >&2
+    ask login "Log in now?" n
+  fi
 
   # Secrets first so a cancelled prompt leaves nothing half-created.
   local key="" token=""
   if [[ $DRY_RUN == 1 ]]; then
-    echo "# would ask (hidden) for $kv and DISCORD_BOT_TOKEN"
+    echo "# would ask (hidden) for ${kv:+$kv and }DISCORD_BOT_TOKEN"
   else
-    secret key "$kv"
+    [[ -z $kv ]] || secret key "$kv"
     secret token DISCORD_BOT_TOKEN
   fi
 
@@ -332,15 +358,30 @@ cmd_create() {
   as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
   # Honcho memory wiring (issue #5) goes here.
 
-  # printf is a builtin: secrets never reach a process argv.
-  printf '%s=%s\nDISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
-    "$kv" "$key" "$token" "$(cfg discord_allowed_users)" |
+  if [[ $provider == claude-subscription-directsdk-experimental ]]; then
+    # Native installer puts claude in ~/.local/bin of the profile.
+    as_profile "$name" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+    as_profile "$name" hermes plugins install claude-subscription-directsdk
+  fi
+
+  # printf is a builtin: secrets never reach a process argv. No key line for
+  # subscriptions (the Claude plugin refuses ANTHROPIC_* in .env).
+  { [[ -z $kv ]] || printf '%s=%s\n' "$kv" "$key"
+    printf 'DISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
+      "$token" "$(cfg discord_allowed_users)"; } |
     write_file 600 "$name:$name" "$hh/.env" secret
 
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
   render "$name" isolate.conf | write_file 644 root:root "/etc/systemd/system/$unit.d/isolate.conf"
   run systemctl daemon-reload
+  if [[ -n $kv ]]; then :
+  elif [[ $login == [yY]* ]]; then
+    sub_login "$name" "$provider"
+  else
+    echo "Login skipped. Run it later as root:"
+    DRY_RUN=1 sub_login "$name" "$provider" | sed 's/^+ /  sudo /'
+  fi
   echo "created $name (not started). Fill empty secrets in $hh/.env, then: usine-hermes start $name"
 }
 

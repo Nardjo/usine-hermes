@@ -12,7 +12,7 @@ Environment=HOME=__HOME__
 Environment=HERMES_HOME=__HOME__/.hermes
 Environment=HERMES_LAZY_INSTALL_TARGET=__HOME__/lazy-packages
 Environment=HERMES_ACCEPT_HOOKS=1
-Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=PATH=__HOME__/.local/bin:/usr/local/bin:/usr/bin:/bin
 WorkingDirectory=__HOME__
 ExecStart=/usr/local/bin/hermes gateway run --external-supervisor
 ExecReload=/bin/kill -USR1 $MAINPID

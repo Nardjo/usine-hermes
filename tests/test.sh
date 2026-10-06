@@ -135,9 +135,28 @@ expect "create: says not started" 0 "not started" -- crf
 if crf 2>&1 | grep -qE "systemctl (enable|start)"; then ko "create: never enables/starts"; else ok "create: never enables/starts"; fi
 if crf 2>&1 | grep -qE "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
 expect "create: prompts menu with defaults (no flags)" 0 "model\.provider openrouter" -- cr ab
-expect "create: menu accepts a number" 0 "model\.provider xai" -- cr ab <<<"4"
+expect "create: menu accepts a number" 0 "model\.provider xai" -- cr ab <<<"6"
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
-expect "create: subscription provider not yet" 1 "not supported yet" -- cr ab --provider openai-codex
+# Subscription providers: warning, y/N login as the profile user, or a follow-up command.
+sub() { cr ab --personality p --mission m --provider "$@"; }
+claude="claude-subscription-directsdk-experimental"
+expect "sub: claude warns experimental" 0 "1\.7x" -- sub $claude
+expect "sub: codex warns quota" 0 "quota" -- sub openai-codex
+expect "sub: supergrok warns 403" 0 "403" -- sub xai-oauth
+expect "sub: claude provider set" 0 "hermes config set model\.provider $claude" -- sub $claude
+expect "sub: claude model from config" 0 "hermes config set model\.default sonnet" -- sub $claude
+expect "sub: claude CLI installed as profile" 0 "runuser -u ab -- .*claude\.ai/install\.sh" -- sub $claude
+expect "sub: plugin installed as profile" 0 \
+  "runuser -u ab -- .*hermes plugins install claude-subscription-directsdk" -- sub $claude
+expect "sub: claude login as profile on y" 0 "^\+ runuser -u ab -- .*HOME=/var/lib/usine-hermes/ab .*claude auth login" -- sub $claude <<<"y"
+expect "sub: codex login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex <<<"y"
+expect "sub: supergrok login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add xai-oauth" -- sub xai-oauth <<<"y"
+expect "sub: skip prints follow-up command" 0 "later.*" -- sub openai-codex
+expect "sub: follow-up is the login as profile" 0 "^ *sudo runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex
+if sub openai-codex 2>&1 | grep -q "^+ .*auth add"; then ko "sub: skip runs no login"; else ok "sub: skip runs no login"; fi
+if sub $claude 2>&1 | grep -qE "API_KEY|ANTHROPIC"; then ko "sub: no API key asked or written"; else ok "sub: no API key asked or written"; fi
+expect "sub: menu offers subscriptions" 0 "openai-codex" -- cr ab --personality p --mission m <<<"5"
+expect "sub: unit PATH finds the profile's claude CLI" 0 "^\| Environment=PATH=/var/lib/usine-hermes/ab/\.local/bin:" -- sub $claude
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
 expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
 if [[ $EUID -ne 0 ]]; then
