@@ -305,6 +305,53 @@ if [[ $EUID -ne 0 ]]; then
   expect "secret: non-root refused" 1 "must run as root" -- lc secret delta DISCORD_BOT_TOKEN <<<x
 fi
 
+# bridge: the only root command of the Vulcain preset (via sudo). Validated
+# here without root; --dry-run prints the journal line and the systemd-run.
+mkprof vul "tok.vul.1234567890" "sk-or-vul-secret"
+br() { env SUDO_USER="${CALLER-vul}" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" bridge "$@" --dry-run; }
+long() { printf "%${1}s" "" | tr ' ' x; }
+for a in destroy secret init bootstrap stop config bridge help frobnicate ""; do
+  expect "bridge: '$a' denied" 2 "not allowed" -- br "$a" delta
+done
+expect "bridge: needs a sudo caller" 1 "through sudo" -- env SUDO_USER= USINE_CONFIG="$lcfg" "$cli" bridge list --dry-run
+expect "bridge: caller must be managed" 1 "not a managed profile" -- env SUDO_USER=stranger USINE_CONFIG="$lcfg" "$cli" bridge list --dry-run
+expect "bridge: bad target name" 2 "invalid name" -- br restart Bad
+expect "bridge: missing target" 2 "invalid name" -- br start
+expect "bridge: extra arguments refused" 2 "usage" -- br restart delta now
+expect "bridge: list takes nothing" 2 "usage" -- br list delta
+expect "bridge: no restart of itself" 2 "own profile" -- br restart vul
+expect "bridge: no start of itself" 2 "own profile" -- br start vul
+expect "bridge: no doctor of itself" 2 "own profile" -- br doctor vul
+expect "bridge: status of itself allowed" 0 "systemd-run .* /usr/local/bin/usine-hermes status vul$" -- br status vul
+expect "bridge: logs of itself allowed" 0 "usine-hermes logs vul -n 50$" -- br logs vul -n 50
+expect "bridge: logs -n must be a small number" 2 "usage" -- br logs delta -n 99999
+expect "bridge: logs -n no leading zero" 2 "usage" -- br logs delta -n 0999
+expect "bridge: logs bad flag" 2 "usage" -- br logs delta --since x
+expect "bridge: doctor of all" 0 "usine-hermes doctor$" -- br doctor
+expect "bridge: restart another profile" 0 "usine-hermes restart delta$" -- br restart delta
+expect "bridge: logged to the journal" 0 "logger -t usine-hermes-bridge caller=vul\\\\? action=restart\\\\? target=delta" -- br restart delta
+expect "bridge: runs as root outside the sandbox" 0 "systemd-run --wait --pipe --quiet --collect /usr/local/bin/usine-hermes list$" -- br list
+bc() { br create newbie "$@"; }
+expect "bridge: create passes flags through" 0 \
+  "usine-hermes create newbie --personality calm --mission watch --provider xai$" -- bc --personality calm --mission watch --provider xai
+expect "bridge: create needs every flag" 2 "usage" -- bc --personality calm --provider xai
+expect "bridge: create flag twice refused" 2 "usage" -- bc --personality a --personality b --mission m --provider xai
+expect "bridge: create no preset" 2 "usage" -- bc --personality a --mission m --provider xai --preset vulcain
+expect "bridge: create unknown provider" 2 "unknown provider" -- bc --personality a --mission m --provider evil
+expect "bridge: personality too long" 2 "too long" -- bc --personality "$(long 201)" --mission m --provider xai
+expect "bridge: mission too long" 2 "too long" -- bc --personality a --mission "$(long 501)" --provider xai
+expect "bridge: max-length text accepted" 0 "systemd-run" -- bc --personality "$(long 200)" --mission "$(long 500)" --provider xai
+expect "bridge: control chars refused" 2 "control" -- bc --personality $'a\nb' --mission m --provider xai
+expect "bridge: create of itself refused" 2 "own profile" -- br create vul --personality a --mission m --provider xai
+sed 's/^max_profiles:.*/max_profiles: 7/' "$lcfg" >"$tmp/full.yaml"
+expect "bridge: max_profiles enforced" 1 "max_profiles" -- env USINE_CONFIG="$tmp/full.yaml" SUDO_USER=vul PATH="$tmp/stub:$PATH" \
+  "$cli" bridge create newbie --personality a --mission m --provider xai --dry-run
+if [[ $EUID -ne 0 ]]; then
+  expect "bridge: non-root refused" 1 "must run as root" -- env SUDO_USER=vul USINE_CONFIG="$lcfg" "$cli" bridge list
+fi
+if "$cli" help | grep -c >/dev/null bridge; then ko "bridge: hidden from help"; else ok "bridge: hidden from help"; fi
+expect "config reads max_profiles" 0 "^10$" -- env USINE_CONFIG="$root/usine.example.yaml" "$cli" config max_profiles
+
 # doctor: runuser/stat/git/curl stubbed; STUB_* vars inject failures.
 cat >"$tmp/stub/runuser" <<'EOF'
 #!/bin/sh

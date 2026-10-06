@@ -141,6 +141,7 @@ discord_allowed_users: $allow
 honcho: $honcho
 peer_name: $peer
 honcho_url: http://127.0.0.1:8000
+max_profiles: 10
 EOF
   [[ $DRY_RUN == 1 ]] || echo "wrote $CONFIG"
 }
@@ -682,6 +683,64 @@ cmd_destroy() {
   echo "destroyed $name"
 }
 
+# Bridge for the Vulcain preset, run by sudo (one sudoers rule). Re-validates
+# every argument, logs caller/action/target to the journal, then hands the
+# command to systemd so it runs as root outside the caller's sandbox.
+cmd_bridge() {
+  local caller=${SUDO_USER:-} action=${1:-} target=${2:-} usage n
+  [[ -n $caller ]] || die "bridge: run it through sudo from an operator profile"
+  check_name "$caller"
+  need_managed "$caller"
+  shift || true
+  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --personality T --mission T --provider P"
+  case $action in
+    list) [[ $# -eq 0 ]] || die "$usage" 2 ;;
+    doctor)
+      [[ $# -le 1 ]] || die "$usage" 2
+      [[ -z $target ]] || check_name "$target"
+      ;;
+    status | start | restart)
+      check_name "$target"
+      [[ $# -eq 1 ]] || die "$usage" 2
+      ;;
+    logs)
+      check_name "$target"
+      [[ $# -eq 1 || ($# -eq 3 && $2 == -n && $3 =~ ^[1-9][0-9]{0,3}$ && $3 -le 1000) ]] || die "$usage" 2
+      ;;
+    create)
+      check_name "$target"
+      local -A seen=()
+      local flag value next
+      for ((n = 2; n <= $#; n += 2)); do
+        flag=${!n} next=$((n + 1))
+        [[ -z ${seen[$flag]:-} && $next -le $# ]] || die "$usage" 2
+        value=${!next}
+        case $flag in
+          --personality) ((${#value} <= 200)) || die "bridge: personality too long (max 200)" 2 ;;
+          --mission) ((${#value} <= 500)) || die "bridge: mission too long (max 500)" 2 ;;
+          --provider) [[ " $PROVIDERS " == *" $value "* ]] || die "unknown provider: $value" 2 ;;
+          *) die "$usage" 2 ;;
+        esac
+        [[ $value != *[[:cntrl:]]* ]] || die "bridge: control characters in $flag" 2
+        seen[$flag]=1
+      done
+      [[ ${#seen[@]} -eq 3 ]] || die "$usage" 2
+      ;;
+    *) die "bridge: '$action' not allowed ($usage)" 2 ;;
+  esac
+  [[ $target != "$caller" || $action == status || $action == logs ]] ||
+    die "bridge: $action on its own profile is not allowed" 2
+  if [[ $action == create ]]; then
+    local max
+    max=$(cfg max_profiles)
+    [[ $max =~ ^[0-9]+$ ]] || die "invalid max_profiles: '$max'" 2
+    (($(profiles | wc -l) < max)) || die "bridge: max_profiles ($max) reached"
+  fi
+  need_root bridge
+  run logger -t usine-hermes-bridge "caller=$caller action=$action target=${target:--}"
+  run systemd-run --wait --pipe --quiet --collect "$BIN" "$action" "$@" </dev/null
+}
+
 # verdict <label> <cmd...>: print ok/FAIL for one check; FAIL sets failed=1.
 verdict() {
   if "${@:2}" >/dev/null 2>&1; then
@@ -745,7 +804,7 @@ main() {
   case $cmd in
     help | -h | --help) usage ;;
     create | start | stop | restart | status | logs | destroy | secret) check_name "${1:-}" ;;&
-    create | start | stop | restart | status | logs | destroy | secret | list | config | bootstrap | doctor)
+    create | start | stop | restart | status | logs | destroy | secret | list | config | bootstrap | doctor | bridge)
       check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
@@ -761,6 +820,7 @@ main() {
     init) cmd_init ;;
     config) cfg "${1:?usage: usine-hermes config <key>}" ;;
     bootstrap) cmd_bootstrap ;;
+    bridge) cmd_bridge "$@" ;;
     destroy) cmd_destroy "$1" ;;
     doctor)
       [[ -z ${1:-} ]] || check_name "$1"

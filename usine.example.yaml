@@ -30,3 +30,6 @@ honcho: true
 peer_name: owner
 # Local Honcho API (bound to 127.0.0.1 only).
 honcho_url: http://127.0.0.1:8000
+# Most managed profiles (operator included) a Vulcain operator may reach
+# with create. The human's own `create` is not capped.
+max_profiles: 10
