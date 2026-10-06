@@ -172,9 +172,18 @@ tag_sha() {
   [[ $sha =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
 }
 
+# uv after the Hermes install: its managed copy first, then usual places.
+find_uv() {
+  local candidate
+  for candidate in "$ROOT_HERMES_HOME/bin/uv" /root/.local/bin/uv /usr/local/bin/uv "$(command -v uv || true)"; do
+    [[ -n $candidate && -x $candidate ]] && { echo "$candidate"; return; }
+  done
+  return 1
+}
+
 # Install Hermes once, shared and read-only for profiles, at the pinned tag.
 bootstrap_hermes() {
-  local tag sha installer=/tmp/hermes-install.sh
+  local tag sha uv installer=/tmp/hermes-install.sh
   tag=$(cfg hermes_version)
   if [[ $DRY_RUN == 1 ]]; then
     run git ls-remote "$HERMES_REPO" "refs/tags/$tag^{}" "refs/tags/$tag"
@@ -188,24 +197,29 @@ bootstrap_hermes() {
     echo "Hermes $tag already installed ($sha), skipping installer"
   else
     [[ $DRY_RUN == 1 ]] || installer=$(mktemp)
+    # By commit, not tag: a moved tag cannot swap the installer we run.
     run curl -fsSL -o "$installer" \
-      "https://raw.githubusercontent.com/NousResearch/hermes-agent/$tag/scripts/install.sh"
+      "https://raw.githubusercontent.com/NousResearch/hermes-agent/$sha/scripts/install.sh"
     # No --dir: it would break the system layout (launcher in /usr/local/bin).
-    run env HERMES_HOME="$ROOT_HERMES_HOME" bash "$installer" \
-      --commit "$sha" --non-interactive --skip-browser --skip-computer-use
+    run bash "$installer" --commit "$sha" --non-interactive --skip-browser \
+      --skip-computer-use --hermes-home "$ROOT_HERMES_HOME"
     run rm -f "$installer"
   fi
 
+  uv=$ROOT_HERMES_HOME/bin/uv
+  [[ $DRY_RUN == 1 ]] || uv=$(find_uv) ||
+    die "uv not found after the Hermes install (looked in $ROOT_HERMES_HOME/bin, /root/.local/bin, /usr/local/bin, PATH)"
   # Discord + Honcho client deps are lazy upstream (installed into the venv on
   # first use); root pre-bakes them so profiles never write here. Locked, so a
-  # re-run changes nothing. Inferred from upstream's Dockerfile.
+  # re-run changes nothing. Inferred from upstream's Dockerfile. The honcho
+  # extra (honcho-ai==2.2.0) exists at v2026.9.24 but is not part of "all".
   run env UV_PROJECT_ENVIRONMENT="$HERMES_DIR/venv" UV_PYTHON="$HERMES_DIR/venv/bin/python" \
-    "$ROOT_HERMES_HOME/bin/uv" sync --extra all --extra messaging --extra honcho --locked \
+    "$uv" sync --extra all --extra messaging --extra honcho --locked \
     --project "$HERMES_DIR"
   run chown -R root:root "$HERMES_DIR"
   run chmod -R go-w "$HERMES_DIR"
   # Profiles cannot reach /root; lazy installs as a profile need uv on PATH.
-  run install -m 755 "$ROOT_HERMES_HOME/bin/uv" /usr/local/bin/uv
+  [[ $uv == /usr/local/bin/uv ]] || run install -m 755 "$uv" /usr/local/bin/uv
 }
 
 HONCHO_DIR=/opt/usine-hermes/honcho

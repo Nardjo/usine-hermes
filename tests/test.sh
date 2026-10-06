@@ -112,11 +112,14 @@ bs() { env USINE_CONFIG="$root/usine.example.yaml" "$cli" bootstrap --dry-run; }
 expect "bootstrap: apt prereqs" 0 "apt-get install -y .*git.*curl" -- bs
 expect "bootstrap: tag resolved via ls-remote" 0 \
   "git ls-remote https://github.com/NousResearch/hermes-agent .*refs/tags/v2026\.9\.24" -- bs
-expect "bootstrap: installer fetched at the tag" 0 \
-  "raw\.githubusercontent\.com/NousResearch/hermes-agent/v2026\.9\.24/scripts/install\.sh" -- bs
+expect "bootstrap: installer fetched at the resolved sha" 0 \
+  "raw\.githubusercontent\.com/NousResearch/hermes-agent/\\\\?<sha-of-v2026\.9\.24\\\\?>/scripts/install\.sh" -- bs
+if bs 2>&1 | grep -c >/dev/null "hermes-agent/v2026"; then ko "bootstrap: installer not fetched by tag"; else ok "bootstrap: installer not fetched by tag"; fi
 expect "bootstrap: installer pinned and non-interactive" 0 \
   "--commit \\\\?<sha-of-v2026\.9\.24\\\\?> --non-interactive --skip-browser --skip-computer-use" -- bs
-if bs 2>&1 | grep -q -- "--dir"; then ko "bootstrap: no --dir"; else ok "bootstrap: no --dir"; fi
+expect "bootstrap: root HERMES_HOME via installer flag" 0 "install.* --hermes-home /root/\.hermes" -- bs
+if bs 2>&1 | grep -c >/dev/null "HERMES_HOME="; then ko "bootstrap: no HERMES_HOME env"; else ok "bootstrap: no HERMES_HOME env"; fi
+if bs 2>&1 | grep -c >/dev/null -- "--dir"; then ko "bootstrap: no --dir"; else ok "bootstrap: no --dir"; fi
 expect "bootstrap: skip when at pinned sha" 0 \
   "skip.*/usr/local/lib/hermes-agent.*at <sha-of-v2026\.9\.24>" -- bs
 expect "bootstrap: pre-bakes Discord + Honcho deps" 0 \
@@ -152,8 +155,8 @@ expect "create: drop-in strict + home bound" 0 "^\| BindPaths=/var/lib/usine-her
 expect "create: drop-in hides other processes" 0 "^\| ProtectProc=invisible$" -- crf
 expect "create: daemon-reload" 0 "systemctl daemon-reload" -- crf
 expect "create: says not started" 0 "not started" -- crf
-if crf 2>&1 | grep -qE "systemctl (enable|start)"; then ko "create: never enables/starts"; else ok "create: never enables/starts"; fi
-if crf 2>&1 | grep -qE "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
+if crf 2>&1 | grep -cE >/dev/null "systemctl (enable|start)"; then ko "create: never enables/starts"; else ok "create: never enables/starts"; fi
+if crf 2>&1 | grep -cE >/dev/null "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
 expect "create: prompts menu with defaults (no flags)" 0 "model\.provider openrouter" -- cr ab
 expect "create: menu accepts a number" 0 "model\.provider xai" -- cr ab <<<"6"
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
@@ -173,8 +176,8 @@ expect "sub: codex login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth 
 expect "sub: supergrok login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add xai-oauth" -- sub xai-oauth <<<"y"
 expect "sub: skip prints follow-up command" 0 "later.*" -- sub openai-codex
 expect "sub: follow-up is the login as profile" 0 "^ *sudo runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex
-if sub openai-codex 2>&1 | grep -q "^+ .*auth add"; then ko "sub: skip runs no login"; else ok "sub: skip runs no login"; fi
-if sub $claude 2>&1 | grep -qE "API_KEY|ANTHROPIC"; then ko "sub: no API key asked or written"; else ok "sub: no API key asked or written"; fi
+if sub openai-codex 2>&1 | grep -c >/dev/null "^+ .*auth add"; then ko "sub: skip runs no login"; else ok "sub: skip runs no login"; fi
+if sub $claude 2>&1 | grep -cE >/dev/null "_API_KEY"; then ko "sub: no API key asked or written"; else ok "sub: no API key asked or written"; fi
 expect "sub: menu offers subscriptions" 0 "openai-codex" -- cr ab --personality p --mission m <<<"5"
 expect "sub: unit PATH finds the profile's claude CLI" 0 "^\| Environment=PATH=/var/lib/usine-hermes/ab/\.local/bin:" -- sub $claude
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
@@ -216,11 +219,11 @@ expect "start: enables and starts" 0 "systemctl enable --now usine-delta\.servic
 expect "stop: stops unit" 0 "systemctl stop usine-delta\.service" -- lc stop delta --dry-run
 expect "restart: restarts unit" 0 "systemctl restart usine-delta\.service" -- lc restart delta --dry-run
 expect "list: managed profiles only" 0 "^delta +active +token=set" -- lc list
-if lc list 2>&1 | grep -q stranger; then ko "list: hides non-managed dirs"; else ok "list: hides non-managed dirs"; fi
+if lc list 2>&1 | grep -c >/dev/null stranger; then ko "list: hides non-managed dirs"; else ok "list: hides non-managed dirs"; fi
 expect "list: empty token shown" 0 "^alpha +active +token=empty" -- lc list
 expect "status: unit state + token" 0 "token=set" -- lc status delta
 expect "logs: journal of the unit" 0 "login ok" -- lc logs delta
-if lc logs delta 2>&1 | grep -qE "tok\.delta|sk-or-delta|abcdefghijklmnop"; then ko "logs: secrets redacted"; else ok "logs: secrets redacted"; fi
+if lc logs delta 2>&1 | grep -cE >/dev/null "tok\.delta|sk-or-delta|abcdefghijklmnop"; then ko "logs: secrets redacted"; else ok "logs: secrets redacted"; fi
 if [[ $EUID -ne 0 ]]; then
   expect "start: non-root refused" 1 "must run as root" -- lc start delta
 fi
@@ -281,8 +284,8 @@ expect "doctor: home owner and mode" 0 "^delta +home +ok" -- dr delta
 expect "doctor: .env owner and mode" 0 "^delta +env +ok" -- dr delta
 expect "doctor: cannot read other profile" 0 "^delta +cannot-read-beta +ok" -- dr delta
 expect "doctor: other profile cannot read it" 0 "^beta +cannot-read-delta +ok" -- dr delta
-if dr delta 2>&1 | grep -qE "^(alpha|beta|gamma) +(unit|token|home)"; then ko "doctor <name>: one profile only"; else ok "doctor <name>: one profile only"; fi
-if dr 2>&1 | grep -qE "tok\.|sk-or"; then ko "doctor: secrets never printed"; else ok "doctor: secrets never printed"; fi
+if dr delta 2>&1 | grep -cE >/dev/null "^(alpha|beta|gamma) +(unit|token|home)"; then ko "doctor <name>: one profile only"; else ok "doctor <name>: one profile only"; fi
+if dr 2>&1 | grep -cE >/dev/null "tok\.|sk-or"; then ko "doctor: secrets never printed"; else ok "doctor: secrets never printed"; fi
 expect "doctor: readable .env of another profile fails" 1 "^alpha +cannot-read-delta +FAIL" -- dr STUB_LEAK=delta delta
 expect "doctor: hermes off pin fails" 1 "^hermes +FAIL" -- dr STUB_HEAD=deadbeef delta
 expect "doctor: honcho down fails" 1 "^honcho +FAIL" -- dr STUB_HONCHO_DOWN=1 delta
@@ -305,13 +308,13 @@ expect "bootstrap: Honcho .env root 600" 0 \
 expect "bootstrap: Honcho key asked hidden, not in dry-run" 0 "would ask \(hidden\).*OpenRouter" -- bs
 expect "bootstrap: Honcho up -d" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- bs
 expect "bootstrap: waits for Honcho health" 0 "http://127\.0\.0\.1:8000/health" -- bs
-if bs 2>&1 | grep -qE "LLM_OPENAI_API_KEY=|POSTGRES_PASSWORD="; then ko "bootstrap: Honcho secrets not printed"; else ok "bootstrap: Honcho secrets not printed"; fi
-if bsn 2>&1 | grep -qE "docker|/opt/usine-hermes"; then ko "bootstrap: honcho false skips Docker/Honcho"; else ok "bootstrap: honcho false skips Docker/Honcho"; fi
+if bs 2>&1 | grep -cE >/dev/null "LLM_OPENAI_API_KEY=|POSTGRES_PASSWORD="; then ko "bootstrap: Honcho secrets not printed"; else ok "bootstrap: Honcho secrets not printed"; fi
+if bsn 2>&1 | grep -cE >/dev/null "docker|/opt/usine-hermes"; then ko "bootstrap: honcho false skips Docker/Honcho"; else ok "bootstrap: honcho false skips Docker/Honcho"; fi
 expect "bootstrap: honcho false still installs Hermes" 0 "hermes-agent" -- bsn
 c="$root/templates/honcho-compose.yml"
 expect "compose: pinned Honcho image" 0 "image: ghcr\.io/plastic-labs/honcho:v3\.2\.2" -- cat "$c"
 expect "compose: api only on loopback" 0 "127\.0\.0\.1:8000:8000" -- cat "$c"
-if grep -E '^ *- "?[0-9.:]*[0-9]+:[0-9]+"?$' "$c" | grep -v '127\.0\.0\.1:8000:8000' | grep -q .; then ko "compose: no other published port"; else ok "compose: no other published port"; fi
+if grep -E '^ *- "?[0-9.:]*[0-9]+:[0-9]+"?$' "$c" | grep -v '127\.0\.0\.1:8000:8000' | grep -c >/dev/null .; then ko "compose: no other published port"; else ok "compose: no other published port"; fi
 if grep -qE "mcp|HOST_AUTH_METHOD|postgres:postgres@" "$c"; then ko "compose: no mcp, trust or default password"; else ok "compose: no mcp, trust or default password"; fi
 expect "compose: generated db password wired" 0 "postgres:\\$\{POSTGRES_PASSWORD" -- cat "$c"
 expect "compose: restarts after reboot" 0 "restart: unless-stopped" -- cat "$c"
@@ -326,7 +329,7 @@ expect "create: honcho.json points at workspace" 0 '"workspace": *"ab"' -- crf
 expect "create: honcho.json peer name" 0 '"peerName": *"owner"' -- crf
 expect "create: memory provider set as profile" 0 \
   "runuser -u ab -- .*hermes config set memory\.provider honcho" -- crf
-if crn 2>&1 | grep -qiE "honcho|workspaces"; then ko "create: honcho false skips memory"; else ok "create: honcho false skips memory"; fi
+if crn 2>&1 | grep -ciE >/dev/null "honcho|workspaces"; then ko "create: honcho false skips memory"; else ok "create: honcho false skips memory"; fi
 expect "bootstrap: uv reachable by profiles" 0 "install -m 755 /root/\.hermes/bin/uv /usr/local/bin/uv" -- bs
 
 # Lint: every shell file must pass shellcheck.
