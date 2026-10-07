@@ -442,7 +442,7 @@ expect "bridge: memory takes nothing" 2 "usage" -- br memory delta
 # take-secret: the value captured hidden by Vulcain's usine-secret skill.
 echo "USINE_PENDING_SECRET=sk-pending-secret" >>"$hr/vul/.hermes/.env"
 tss() { STOPPED=1 ts "$@"; }
-mkprof vtok "" ""; echo "USINE_PENDING_SECRET=new.vtok.123456" >>"$hr/vtok/.hermes/.env"
+mkprof vtok "" ""; echo "USINE_PENDING_SECRET=MTIzNDU2Nzg5MDEyMzQ1Njc4.vtok.123456" >>"$hr/vtok/.hermes/.env"
 ts() { env USINE_LANG=en STUB_INACTIVE="${STOPPED-}" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" take-secret "$@" --dry-run; }
 expect "take-secret: written to the target .env" 0 \
   "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY"$'\n'"\+ write $hr/delta/\.hermes/\.env \(mode 600, owner delta:delta\)" -- ts vul delta OPENROUTER_API_KEY
@@ -450,7 +450,9 @@ expect "take-secret: removed from the caller .env" 0 \
   "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY"$'\n'"\+ write $hr/vul/\.hermes/\.env " -- ts vul delta OPENROUTER_API_KEY
 if ts vul delta OPENROUTER_API_KEY 2>&1 | grep -c >/dev/null "sk-pending"; then ko "take-secret: value never printed"; else ok "take-secret: value never printed"; fi
 expect "take-secret: a Discord token starts a stopped profile" 0 "systemctl enable --now usine-alpha\.service" -- tss vtok alpha DISCORD_BOT_TOKEN
-if ts vtok alpha DISCORD_BOT_TOKEN 2>&1 | grep -c >/dev/null "new\.vtok"; then ko "take-secret: token never printed"; else ok "take-secret: token never printed"; fi
+if ts vtok alpha DISCORD_BOT_TOKEN 2>&1 | grep -cE >/dev/null "MTIzNDU2|vtok\.1"; then ko "take-secret: token never printed"; else ok "take-secret: token never printed"; fi
+expect "take-secret: invite link from the token's application id" 0 \
+  "https://discord\.com/oauth2/authorize\?client_id=123456789012345678&scope=bot\+applications\.commands&permissions=309237763136" -- ts vtok alpha DISCORD_BOT_TOKEN
 expect "take-secret: not a bot token refused" 1 "not a bot token" -- ts vul alpha DISCORD_BOT_TOKEN
 expect "take-secret: nothing captured" 1 "no pending secret" -- ts delta alpha DISCORD_BOT_TOKEN
 expect "take-secret: key checked" 2 "unknown key" -- ts vul delta PATH
