@@ -36,10 +36,21 @@ Each profile is the default profile of its own Hermes home, so there is no profi
 
 ## Install
 
-One command, three questions:
+One command, four questions (answer `2` to the first one for French):
 
 ```
 curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
+Language / Langue : [1] English  [2] Français  (Enter = 1)
+Your Discord id (Discord > Developer Mode > right-click yourself > Copy User ID):
+OpenRouter key (memory + agents, hidden, Enter = no memory):
+Install Vulcain, the agent that creates the other agents from Discord? [Y/n]
+Discord bot token for Vulcain (Enter = later):
+✓ Vulcain is online: talk to it on Discord.
+```
+
+In French:
+
+```
 Ton ID Discord (Discord > Mode développeur > clic droit sur toi > Copier l'identifiant) :
 Clé OpenRouter (mémoire + agents, saisie masquée, Entrée = sans mémoire) :
 Installer Vulcain, l'agent qui crée les autres agents depuis Discord ? [O/n]
@@ -49,7 +60,7 @@ Token du bot Discord de Vulcain (Entrée = plus tard) :
 
 Or from a clone (same result): `git clone https://github.com/Nardjo/usine-hermes && cd usine-hermes && sudo ./install.sh`.
 
-Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it with the terminal as input. It copies the CLI and templates, then chains `init` (the Discord id and the shared OpenRouter key), `bootstrap` (Hermes, Docker, Honcho), the optional Vulcain, and ends with one next step (`doctor` gives the full report). Everything else has a default (home root, Hermes version, provider `openrouter`, memory on when a key is given, peer name `owner`). Re-running it asks nothing already known: the config, the stored key and an existing Vulcain are kept, and `bootstrap` skips the Hermes installer when the pinned commit is already there.
+Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it with the terminal as input. It copies the CLI and templates, then chains `init` (the language, the Discord id and the shared OpenRouter key), `bootstrap` (Hermes, Docker, Honcho), the optional Vulcain, and ends with one next step (`doctor` gives the full report). Everything else has a default (home root, Hermes version, provider `openrouter`, memory on when a key is given, peer name `owner`). Re-running it asks nothing already known: the config, the stored key and an existing Vulcain are kept, and `bootstrap` skips the Hermes installer when the pinned commit is already there.
 
 ## Quickstart
 
@@ -82,7 +93,7 @@ How it works: the bridge is a hidden subcommand of the root-owned CLI. It re-val
 
 | Command | What it does |
 |---|---|
-| `init` | Asks your Discord id and the OpenRouter key (hidden; Enter = no memory), writes `/etc/usine-hermes/usine.yaml` and the shared key `/etc/usine-hermes/openrouter.key` (mode `600`). Does nothing if the config exists. `USINE_CONFIG` overrides the path; the key and the profile registry (`profiles/`) live next to it. |
+| `init` | Asks the language (`[1] English  [2] Français`, skipped when `USINE_LANG` is set), your Discord id and the OpenRouter key (hidden; Enter = no memory), writes `/etc/usine-hermes/usine.yaml` and the shared key `/etc/usine-hermes/openrouter.key` (mode `600`). Does nothing if the config exists. `USINE_CONFIG` overrides the path; the key and the profile registry (`profiles/`) live next to it. |
 | `config <key>` | Prints one config value. |
 | `bootstrap` | Installs prerequisites, Hermes at the pinned tag, pre-installs the Discord and Honcho deps into the shared venv, then (if `honcho: true`) Docker from Docker's apt repo and the Honcho stack, using the shared OpenRouter key. Waits up to 180 s for Honcho health. Asks nothing. |
 | `create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]` | Asks what the agent does (unless `--mission`) and its Discord bot token (hidden; Enter = later). Creates the Linux user, home, `SOUL.md` (default personality unless `--personality`), model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in, then starts it if a token was given; otherwise prints the one `secret` command. Provider `openrouter` by default, with the shared key copied into the profile's `.env` (`600`); `--provider P` asks that provider's key or offers its subscription login (no shared key: `openrouter` asks a key too). A reused token is refused before anything is created. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user; an already managed name (including a half-created profile) is refused with a pointer to `destroy`. With `--mission` and stdin not a terminal (a script, a coding agent, Vulcain), it never prompts: the token stays empty, subscription login is skipped, and it prints the commands to run next. `--preset vulcain` makes the operator profile (section above). |
@@ -133,6 +144,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 
 | Key | Default | Meaning |
 |---|---|---|
+| `lang` | `en` (asked first at install) | Language of every prompt and message: `en` or `fr`. The `USINE_LANG` env var overrides it. Vulcain answers in the language you write to it. |
 | `home_root` | `/var/lib/usine-hermes` | Parent of every profile home. |
 | `hermes_version` | `v2026.9.24` | Hermes tag, resolved to its commit and installed once. |
 | `model_<provider>` | see table above | Default model per provider (`-` in the id becomes `_`). |
@@ -161,7 +173,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 bash tests/test.sh
 ```
 
-Dependency-free, no root, no VPS: covers name validation, the questions `init`, `create` and `secret` ask (and do not ask), `install.sh` OS/root refusal, `--dry-run` of `bootstrap` and `create`, `secret`, the profile lifecycle, `doctor` and the Vulcain bridge against stubbed system commands, and `shellcheck` on every shell file. On macOS use a bash 5 (`/opt/homebrew/bin/bash tests/test.sh`). What needs a real VPS is in [docs/vps-validation.md](docs/vps-validation.md).
+Dependency-free, no root, no VPS: covers name validation, the questions `init`, `create` and `secret` ask (and do not ask) in English and French, `install.sh` OS/root refusal, `--dry-run` of `bootstrap` and `create`, `secret`, the profile lifecycle, `doctor` and the Vulcain bridge against stubbed system commands, and `shellcheck` on every shell file. On macOS use a bash 5 (`/opt/homebrew/bin/bash tests/test.sh`). What needs a real VPS is in [docs/vps-validation.md](docs/vps-validation.md).
 
 ## License
 
