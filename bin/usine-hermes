@@ -12,12 +12,12 @@ usage() {
 Usage: usine-hermes <command> [args] [--dry-run]
 
 Commands:
-  init                 write /etc/usine-hermes/usine.yaml ($USINE_CONFIG overrides)
+  init                 ask the Discord id and OpenRouter key, write the config once
   config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
-  create <name> [--personality T] [--mission T] [--provider P] [--preset vulcain]
-                       create an isolated profile (not started)
-  secret <name> <KEY>  set one secret in the profile .env (hidden prompt)
+  create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]
+                       create an isolated profile; starts it if given a token
+  secret <name> [KEY]  set the Discord token (then start) or one KEY (hidden)
   start <name>         enable and start a profile
   stop <name>          stop a profile
   restart <name>       restart a profile
@@ -242,22 +242,16 @@ bootstrap_docker() {
   run systemctl enable --now docker
 }
 
-# Honcho stack in $HONCHO_DIR. Its .env keeps the DB password and the
-# OpenRouter key across re-runs, so the key is asked only once.
+# Honcho stack in $HONCHO_DIR. Its .env keeps the DB password across re-runs;
+# the OpenRouter key is the shared one stored by init.
 bootstrap_honcho() {
-  local honcho_env=$HONCHO_DIR/.env pw key model=openai/gpt-5.4-mini level url i
+  local honcho_env=$HONCHO_DIR/.env pw key="" model=openai/gpt-5.4-mini level url i
   pw=$(env_get "$honcho_env" POSTGRES_PASSWORD)
-  key=$(env_get "$honcho_env" LLM_OPENAI_API_KEY)
   # Hex: safe inside the connection URI without encoding.
   [[ -n $pw ]] || pw=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
-  if [[ -z $key ]]; then
-    if [[ $DRY_RUN == 1 ]]; then
-      echo "# would ask (hidden) for the OpenRouter key used by Honcho"
-    else
-      secret key "OpenRouter API key for Honcho"
-      [[ -n $key ]] || die "Honcho needs an OpenRouter key (or set honcho: false)"
-    fi
-  fi
+  [[ ! -f $KEY_FILE ]] || key=$(<"$KEY_FILE")
+  [[ $DRY_RUN == 0 ]] || echo "# Honcho key: $KEY_FILE"
+  [[ -n $key || $DRY_RUN == 1 ]] || die "Honcho needs the OpenRouter key in $KEY_FILE (or set honcho: false)"
 
   run install -d -m 700 "$HONCHO_DIR"
   run install -m 644 "$TEMPLATES/honcho-compose.yml" "$HONCHO_DIR/docker-compose.yml"
@@ -691,7 +685,7 @@ cmd_bridge() {
   check_name "$caller"
   need_managed "$caller"
   shift || true
-  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --personality T --mission T --provider P"
+  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P]"
   case $action in
     list) [[ $# -eq 0 ]] || die "$usage" 2 ;;
     doctor)
@@ -723,7 +717,7 @@ cmd_bridge() {
         [[ $value != *[[:cntrl:]]* ]] || die "bridge: control characters in $flag" 2
         seen[$flag]=1
       done
-      [[ ${#seen[@]} -eq 3 ]] || die "$usage" 2
+      [[ -n ${seen[--mission]:-} ]] || die "$usage" 2
       ;;
     *) die "bridge: '$action' not allowed ($usage)" 2 ;;
   esac

@@ -46,12 +46,12 @@ install -D -m 644 "$src/skills/usine-hermes/SKILL.md" "$share_dir/skills/usine-h
 
 echo "Installed $bin_dir/usine-hermes and $share_dir."
 
-# Offer to chain into the first setup; Enter means yes.
-for step in init bootstrap; do
-  read -r -p "Run 'usine-hermes $step' now? [Y/n] " yn || yn=n
-  if [[ $yn == [nN]* ]]; then
-    echo "Next: sudo usine-hermes init && sudo usine-hermes bootstrap"
-    exit 0
-  fi
-  "$bin_dir/usine-hermes" "$step"
-done
+# First setup, re-runnable: init and Vulcain ask only what is not known yet.
+cli=$bin_dir/usine-hermes
+"$cli" init
+"$cli" bootstrap
+if [[ ! -f /etc/usine-hermes/profiles/vulcain ]]; then
+  read -r -p "Installer Vulcain, l'agent qui crée les autres agents depuis Discord ? [O/n] " yn || yn=n
+  [[ $yn == [nN]* ]] || "$cli" create vulcain --preset vulcain
+fi
+"$cli" doctor || true

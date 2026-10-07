@@ -358,7 +358,8 @@ expect "bridge: runs as root outside the sandbox" 0 "systemd-run --wait --pipe -
 bc() { br create newbie "$@"; }
 expect "bridge: create passes flags through" 0 \
   "usine-hermes create newbie --personality calm --mission watch --provider xai$" -- bc --personality calm --mission watch --provider xai
-expect "bridge: create needs every flag" 2 "usage" -- bc --personality calm --provider xai
+expect "bridge: create needs --mission" 2 "usage" -- bc --personality calm --provider xai
+expect "bridge: create with --mission only" 0 "usine-hermes create newbie --mission watch$" -- bc --mission watch
 expect "bridge: create flag twice refused" 2 "usage" -- bc --personality a --personality b --mission m --provider xai
 expect "bridge: create no preset" 2 "usage" -- bc --personality a --mission m --provider xai --preset vulcain
 expect "bridge: create unknown provider" 2 "unknown provider" -- bc --personality a --mission m --provider evil
@@ -441,7 +442,8 @@ expect "bootstrap: Docker enabled at boot" 0 "systemctl enable --now docker" -- 
 expect "bootstrap: Honcho compose installed" 0 "/opt/usine-hermes/honcho/docker-compose\.yml" -- bs
 expect "bootstrap: Honcho .env root 600" 0 \
   "write /opt/usine-hermes/honcho/\.env \(mode 600, owner root:root\)" -- bs
-expect "bootstrap: Honcho key asked hidden, not in dry-run" 0 "would ask \(hidden\).*OpenRouter" -- bs
+if [[ -z $(bs 2>&1 >/dev/null) ]]; then ok "bootstrap: asks nothing (shared key)"; else ko "bootstrap: asks nothing (shared key)"; fi
+expect "bootstrap: Honcho key from the shared key file" 0 "# Honcho key: $root/openrouter\.key" -- bs
 expect "bootstrap: Honcho up -d" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- bs
 expect "bootstrap: waits for Honcho health" 0 "http://127\.0\.0\.1:8000/health" -- bs
 if bs 2>&1 | grep -cE >/dev/null "LLM_OPENAI_API_KEY=|POSTGRES_PASSWORD="; then ko "bootstrap: Honcho secrets not printed"; else ok "bootstrap: Honcho secrets not printed"; fi
