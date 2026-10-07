@@ -12,13 +12,16 @@ usage() {
     cat <<'EOF'
 Usage : usine-hermes <commande> [args] [--dry-run]
 
+Sans commande : ouvre le chat avec Vulcain dans le terminal (demande d'abord son modèle).
+
 Commandes :
-  init                 demande la langue, l'ID Discord et la clé OpenRouter, écrit la config une fois
+  init                 demande la langue, écrit la config une fois
   config <clé>         affiche une valeur de config
   bootstrap            installe Hermes, Docker et Honcho (idempotent)
   create <nom> [--mission T] [--personality T] [--provider P] [--preset vulcain]
                        crée un profil isolé ; le démarre si un token est donné
   secret <nom> [CLÉ]   définit le token Discord (puis démarre) ou une CLÉ (masquée)
+  model <nom>          choisit le modèle : connexion à un abonnement ou clé API
   start <nom>          active et démarre un profil
   stop <nom>           arrête un profil
   restart <nom>        redémarre un profil
@@ -36,13 +39,16 @@ EOF
   cat <<'EOF'
 Usage: usine-hermes <command> [args] [--dry-run]
 
+No command: open the terminal chat with Vulcain (asks its model first).
+
 Commands:
-  init                 ask the language, the Discord id and OpenRouter key, write the config once
+  init                 ask the language, write the config once
   config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
   create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]
                        create an isolated profile; starts it if given a token
   secret <name> [KEY]  set the Discord token (then start) or one KEY (hidden)
+  model <name>         pick the model: subscription login or API key
   start <name>         enable and start a profile
   stop <name>          stop a profile
   restart <name>       restart a profile
@@ -404,15 +410,17 @@ write_file() {
 
 render() {
   sed -e "s|__NAME__|$1|g" -e "s|__HOME_ROOT__|$(cfg home_root)|g" \
-    -e "s|__HOME__|$(home_of "$1")|g" "$TEMPLATES/$2"
+    -e "s|__HOME__|$(home_of "$1")|g" -e "s|__LANG__|$(cfg lang)|g" "$TEMPLATES/$2"
 }
 
 # Run a command as the profile user inside its own Hermes home.
+# as_profile <name> [--pty] <cmd...>
 as_profile() {
-  local name=$1 home
+  local name=$1 home pty=()
   home=$(home_of "$1")
   shift
-  (cd / && run runuser -u "$name" -- env HOME="$home" HERMES_HOME="$home/.hermes" \
+  [[ ${1:-} != --pty ]] || { pty=(--pty); shift; }
+  (cd / && run runuser "${pty[@]}" -u "$name" -- env HOME="$home" HERMES_HOME="$home/.hermes" \
     HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" \
     PATH="$home/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@")
 }
@@ -522,7 +530,7 @@ cmd_create() {
   # The preset brings its own SOUL.md: nothing to ask.
   case $preset in
     "") ;;
-    vulcain) personality=preset mission=preset label=Vulcain ;;
+    vulcain) personality=preset mission=preset label=Vulcain ;; # model chosen in the chat
     *) die "$(t "unknown preset: $preset (only: vulcain)" "preset inconnu : $preset (seul : vulcain)")" 2 ;;
   esac
   need_root create
@@ -536,9 +544,9 @@ cmd_create() {
   # --mission and no TTY (Vulcain's bridge, a script): never prompt; secrets
   # left empty are set afterwards with `usine-hermes secret`.
   local batch=0
-  [[ -n $mission && ! -t 0 ]] && batch=1
-  provider=${provider:-openrouter}
-  [[ " $PROVIDERS " == *" $provider "* ]] || die "$(t "unknown provider: $provider" "fournisseur inconnu : $provider")" 2
+  [[ -n $mission && ! -t 0 || -n $preset ]] && batch=1
+  [[ -n $preset ]] || provider=${provider:-openrouter}
+  [[ -z $provider || " $PROVIDERS " == *" $provider "* ]] || die "$(t "unknown provider: $provider" "fournisseur inconnu : $provider")" 2
   local key_name login=n key="" token=""
   key_name=$(key_var "$provider")
   [[ -n $mission || $batch == 1 ]] || ask mission "$(t "What should $name do? (one sentence):" "Que doit faire $name ? (une phrase) :")"
@@ -546,7 +554,7 @@ cmd_create() {
   mission=${mission:-help the operator with day-to-day tasks}
   # The shared key (stored at init) is the default OpenRouter key.
   [[ $provider != openrouter || ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
-  if [[ -z $key_name ]]; then
+  if [[ -z $key_name && -n $provider ]]; then
     sub_warning "$provider" >&2
     t "The login runs as Linux user $name; its tokens stay in $home." \
       "La connexion se fait en tant qu'utilisateur Linux $name ; ses jetons restent dans $home." >&2
@@ -573,8 +581,10 @@ cmd_create() {
     printf '# %s\n\n## Personality\n%s\n\n## Mission\n%s\n' "$name" "$personality" "$mission"
   fi | write_file 644 "$name:$name" "$hermes_home/SOUL.md"
 
-  as_profile "$name" hermes config set model.provider "$provider"
-  as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
+  if [[ -n $provider ]]; then
+    as_profile "$name" hermes config set model.provider "$provider"
+    as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
+  fi
   if [[ $(cfg honcho) == true ]]; then
     local url
     url=$(cfg honcho_url)
@@ -598,7 +608,7 @@ cmd_create() {
   render "$name" isolate.conf | write_file 644 root:root "/etc/systemd/system/$unit.d/isolate.conf"
   [[ -z $preset ]] || install_vulcain "$name"
   run systemctl daemon-reload
-  if [[ -n $key_name ]]; then :
+  if [[ -n $key_name || -n $preset ]]; then :
   elif [[ $login == [oOyY]* ]]; then
     sub_login "$name" "$provider"
   else
@@ -607,7 +617,10 @@ cmd_create() {
   fi
   [[ -n $key_name && -z $key ]] &&
     t "Key to set: sudo usine-hermes secret $name $key_name" "Clé à saisir : sudo usine-hermes secret $name $key_name"
-  if [[ -n $token ]]; then
+  if [[ -n $preset ]]; then
+    t "✓ Vulcain created. Talk to it (it asks its model first):" "✓ Vulcain créé. Parle-lui (il demande d'abord son modèle) :"
+    echo "  sudo usine-hermes"
+  elif [[ -n $token ]]; then
     started "$name" || return 0
     if [[ -n $preset ]]; then t "✓ Vulcain is online: talk to it on Discord." "✓ Vulcain est en ligne : parle-lui sur Discord."
     else t "✓ $name created and started. Mention @$name on Discord." "✓ $name créée et démarrée. Mentionne @$name sur Discord."; fi
@@ -615,6 +628,17 @@ cmd_create() {
     t "✓ $name created. Once you have the bot token, it starts with:" "✓ $name créée. Quand tu as le token du bot, il démarre avec :"
     echo "  sudo usine-hermes secret $name"
   fi
+}
+
+# usine-hermes with no command: Hermes' classic REPL as Vulcain, in this
+# terminal. The first time, Vulcain has no model yet: pick it first.
+cmd_chat() {
+  need_managed vulcain
+  [[ $DRY_RUN == 1 || (-t 0 && -t 1) ]] ||
+    die "$(t "the chat needs a terminal: ssh -t <vps> sudo usine-hermes" "le chat a besoin d'un terminal : ssh -t <vps> sudo usine-hermes")"
+  need_root chat
+  [[ -n $(provider_of vulcain) ]] || cmd_model vulcain
+  as_profile vulcain --pty hermes --cli
 }
 
 cmd_start() {
@@ -911,10 +935,11 @@ main() {
   done
   set -- "${args[@]+"${args[@]}"}"
 
-  local cmd=${1:-help}
+  local cmd=${1:-chat}
   shift || true
   case $cmd in
     help | -h | --help) usage ;;
+    chat) check_config; cmd_chat ;;
     create | start | stop | restart | status | logs | destroy | secret | model) check_name "${1:-}" ;;&
     create | start | stop | restart | status | logs | destroy | secret | model | list | config | bootstrap | doctor | bridge)
       check_config ;;&

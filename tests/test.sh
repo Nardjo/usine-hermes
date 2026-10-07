@@ -21,7 +21,6 @@ expect() {
 }
 
 expect "help exits 0 and lists commands" 0 "create" -- "$cli" help
-expect "no args shows help" 0 "Usage" -- "$cli"
 expect "unknown command exits 2" 2 "unknown command" -- "$cli" frobnicate
 
 # Profile names: ^[a-z][a-z0-9-]{1,30}$ (2..31 chars).
@@ -219,7 +218,7 @@ if sub openai-codex 2>&1 | grep -c >/dev/null "secret ab .*_API_KEY"; then ko "c
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
 expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
 # Vulcain preset: an operator profile that creates profiles through the bridge.
-vc() { cr vul --preset vulcain --provider openrouter; }
+vc() { cr vul --preset vulcain; }
 hh=/var/lib/usine-hermes/vul/.hermes
 expect "preset: unknown preset rejected" 2 "unknown preset" -- cr vul --preset nope --provider openrouter
 expect "preset: Vulcain SOUL installed" 0 "write $hh/SOUL\.md \(mode 644, owner vul:vul\)" -- vc
@@ -238,6 +237,10 @@ expect "preset: drop-in relaxes NoNewPrivileges only" 0 \
   "write /etc/systemd/system/usine-vul\.service\.d/vulcain\.conf"$'\n'"\| \[Service\]"$'\n'"\| NoNewPrivileges=no$" -- vc
 expect "preset: still sandboxed by isolate.conf" 0 "write /etc/systemd/system/usine-vul\.service\.d/isolate\.conf" -- vc
 if vc 2>&1 | grep -cE >/dev/null "$prompts|systemctl (enable|start)"; then ko "preset: no prompt, not started"; else ok "preset: no prompt, not started"; fi
+if vc 2>&1 | grep -cE >/dev/null "model\.provider|_API_KEY"; then ko "preset: no provider yet (chosen in the chat)"; else ok "preset: no provider yet (chosen in the chat)"; fi
+expect "preset: registry has no provider" 0 "^\| provider=$" -- vc
+expect "preset: SOUL knows the operator language" 0 "^\| .*language: en" -- vc
+expect "preset: next step is the chat" 0 "sudo usine-hermes$" -- vc
 if crf 2>&1 | grep -cE >/dev/null "sudoers|command_allowlist|vulcain"; then ko "create: no operator bits without preset"; else ok "create: no operator bits without preset"; fi
 if [[ $EUID -ne 0 ]]; then
   expect "create: non-root refused" 1 "must run as root" -- \
@@ -419,6 +422,20 @@ if [[ $EUID -ne 0 ]]; then
 fi
 if "$cli" help | grep -c >/dev/null bridge; then ko "bridge: hidden from help"; else ok "bridge: hidden from help"; fi
 expect "config reads max_profiles" 0 "^10$" -- env USINE_CONFIG="$root/usine.example.yaml" "$cli" config max_profiles
+
+# usine-hermes with no argument: the terminal chat with Vulcain.
+ch() { env USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" "$@"; }
+expect "chat: no Vulcain yet" 1 "not a managed profile" -- ch --dry-run
+mkprof vulcain "" "" openai-codex
+expect "chat: Hermes REPL as vulcain on a pty" 0 \
+  "^\+ runuser --pty -u vulcain -- env HOME=$hr/vulcain HERMES_HOME=$hr/vulcain/\.hermes .*hermes --cli$" -- ch --dry-run
+if ch --dry-run 2>&1 | grep -c >/dev/null "Which model"; then ko "chat: known provider, no menu"; else ok "chat: known provider, no menu"; fi
+echo "provider=" >"$tmp/profiles/vulcain"
+expect "chat: no provider yet: menu first" 0 "Which model for vulcain\?" -- ch --dry-run <<<''
+expect "chat: then the chat" 0 "hermes auth add openai-codex"$'\n'".*"$'\n'".*"$'\n'"\+ runuser --pty -u vulcain" -- ch --dry-run <<<''
+expect "chat: needs a terminal" 1 "ssh -t" -- ch
+expect "help mentions the chat" 0 "Vulcain" -- "$cli" help
+rm -f "$tmp/profiles/vulcain"
 
 # doctor: runuser/stat/git/curl stubbed; STUB_* vars inject failures.
 cat >"$tmp/stub/runuser" <<'EOF'
