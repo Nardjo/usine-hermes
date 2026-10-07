@@ -2,22 +2,24 @@
 
 `tests/test.sh` cannot exercise systemd, Docker, Discord or provider logins. Run this procedure before calling a release good. Use a fresh Ubuntu 24.04 VPS (2 GB+ RAM), then repeat on Debian 12 and Debian 13 if possible. Destroy the VPS afterwards.
 
-You need: an OpenRouter key (Honcho + profiles), two Discord applications with bots (see the README Discord guide), a test Discord server, your Discord user id, and a second Discord account that is not allowlisted.
+You need: a ChatGPT (Codex) subscription or an API key for Vulcain, an OpenRouter key (memory + profiles), three Discord applications with bots (see the README Discord guide), a test Discord server, your Discord user id, and a second Discord account that is not allowlisted.
 
 ## Procedure
 
-1. **Install**
+1. **Install** (over `ssh -t`, so the chat gets a terminal)
    ```sh
    curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
    ```
-   Expect exactly three questions: your Discord id, the OpenRouter key (hidden), Vulcain `[O/n]` (answer `n` for now). Expect `Honcho healthy`, `bootstrap done`, then `✓ Installé…` with the next step. `/etc/usine-hermes/openrouter.key` is `root:root 600`.
-2. **Idempotency**: re-run the install one-liner. Expect no Discord id or key question (`config gardée`), `Hermes ... already installed, skipping installer`, `Docker with compose already installed`, `bootstrap done`; only the Vulcain question again.
-3. **Two profiles**
+   Expect one question (language), `bootstrap done` without Docker, `✓ Vulcain créé…`, then the model menu. Press Enter (ChatGPT): a device code and URL, log in from your laptop; then the Hermes chat opens as `vulcain`. No Discord id, OpenRouter key or `[O/n]` question. `config honcho` is `false`; `docker` is not installed.
+2. **Chat with Vulcain**: say hello. It greets in the chosen language and offers its Discord bot. Follow it: give your Discord user id in the chat (it runs `bridge allow`), then it views `usine-secret`: the terminal asks the token hidden, Vulcain only sees "Secret stored", runs `bridge take-secret vulcain DISCORD_BOT_TOKEN` and gives the invite link. `grep -c USINE_PENDING /var/lib/usine-hermes/vulcain/.hermes/.env` is `0`; `sudo usine-hermes list` shows `vulcain active token=set`; Vulcain answers your mention on Discord.
+   Then accept memory: the OpenRouter key is asked hidden the same way, `bridge memory` installs Docker and Honcho (`Honcho healthy`), `/etc/usine-hermes/openrouter.key` is `root:root 600`, `config honcho` is `true`.
+3. **Idempotency**: leave the chat, re-run the install one-liner. Expect no question at all: `config gardée`, `Hermes ... already installed, skipping installer`, then straight into the chat. `sudo usine-hermes` alone also opens it; `ssh <vps> sudo usine-hermes` (no `-t`) prints the `ssh -t` hint.
+   Two more profiles by hand:
    ```sh
    sudo usine-hermes create alice     # one sentence + bot A token: "alice créée et démarrée"
    sudo usine-hermes create bob       # one sentence + Enter: prints "sudo usine-hermes secret bob"
    sudo usine-hermes secret bob       # bot B token: bob starts by itself
-   sudo usine-hermes list             # both active, token=set
+   sudo usine-hermes list             # all active, token=set
    ```
    `create` asks exactly two questions and never the key; `alice`'s `.env` holds the shared key (`alice:alice 600`). Also check refusals: `create root` (non-managed user), `secret bob` with alice's token.
 4. **Discord**: invite both bots. Mention each from your account: both answer. Message without a mention: silence. Mention from the non-allowlisted account: silence.
@@ -27,9 +29,8 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
 8. **Reboot**: `sudo reboot`, then `list` (both active), `doctor` green, both bots answer.
 9. **Exposure**: `sudo ss -tlnp`: Honcho only on `127.0.0.1:8000`; no Postgres (5432) or Redis (6379) listener on any interface.
 10. **Destroy**: `sudo usine-hermes destroy bob` (type `bob`). Then `id bob` and `getent group bob` fail, `/var/lib/usine-hermes/bob`, `/etc/usine-hermes/profiles/bob` and `/etc/systemd/system/usine-bob.service*` are gone, `list` and `doctor` show only alice.
-11. **Vulcain**: re-run the install one-liner and answer `O`, then paste Vulcain's bot token. Expect `✓ Vulcain est en ligne : parle-lui sur Discord.`
-    On Discord ask it to create `carol`. Expect: it asks only the name and what carol does, repeats them and waits for your yes, then gives you the Discord steps and one command, `sudo usine-hermes secret carol`, and never asks for a token. `list` shows `carol inactive token=empty`. Run the command yourself: carol starts and answers on Discord. Ask Vulcain to destroy or stop `carol`, to set a secret, and to restart itself: each refused. `sudo usine-hermes doctor`: all `ok`, including `vulcain cannot-read-carol` and `carol cannot-read-vulcain`.
-12. Optional: a third profile with a subscription provider (`create dave --provider openai-codex`, or `claude-subscription-directsdk-experimental`, `xai-oauth`), login at `create`, answer on Discord.
+11. **Vulcain creates an agent**: in the chat ask it to create `carol`. Expect: it asks only the name and what carol does, repeats them and waits for your yes, takes carol's Discord token through the hidden capture (`take-secret carol DISCORD_BOT_TOKEN`), and carol starts and answers on Discord. Ask Vulcain to destroy or stop `carol`, and to restart itself: each refused. `sudo usine-hermes doctor`: all `ok`, including `vulcain cannot-read-carol` and `carol cannot-read-vulcain`.
+12. **model**: `sudo usine-hermes model alice`, choose `2` (Claude): the Max + credits warning, then `hermes auth add anthropic` paste-code as `alice`; alice restarts and answers. Optional: `7` (SuperGrok).
 
 ## Checklist of unverified assumptions
 
@@ -63,11 +64,17 @@ Tick each one on the VPS; open an issue for any failure.
 - [ ] The agent recalls facts across conversations
 
 ### Subscriptions
-- [ ] `hermes plugins install` runs non-interactively
-- [ ] Claude CLI installs under `runuser` with the profile HOME; `claude auth login` paste-code works without a browser
-- [ ] `hermes auth add` device-code flows work in a TTY under `runuser`
-- [ ] The gateway sandbox finds the profile's `claude` (`~/.local/bin` on PATH)
+- [ ] `hermes auth add openai-codex`, `anthropic` and `xai-oauth` work in a TTY under `runuser` (device code / paste code, no browser)
+- [ ] After `model`, `hermes` skips its setup wizard (provider configured)
 - [ ] A subscription profile answers on Discord
+
+### Terminal chat and hidden secrets
+- [ ] `runuser --pty -u vulcain -- env … hermes --cli` gives a working classic REPL (line editing, Ctrl-C, exit)
+- [ ] `usine-secret`'s `required_environment_variables` prompts hidden in the CLI and writes `USINE_PENDING_SECRET` to Vulcain's `.env` (mode `600`, owner `vulcain`)
+- [ ] The model's tool output only says the secret was stored (check the session log for the value: absent)
+- [ ] After `take-secret` removed it, a second capture in the same chat session prompts again (Hermes reads `.env`, not a stale process env)
+- [ ] `bridge take-secret`, `allow`, `memory` run from the chat with no approval prompt (`command_allowlist`), and `memory` finishes within Hermes' terminal-tool timeout (Docker + image pulls)
+- [ ] The invite link printed by `take-secret` matches the Developer Portal's Application ID
 
 ### Destroy and doctor
 - [ ] With two real profiles, cross-read checks fail as expected and own-`.env` reads pass
@@ -80,7 +87,7 @@ Tick each one on the VPS; open an issue for any failure.
 - [ ] `sudo -n /usr/local/bin/usine-hermes bridge list` works inside Vulcain's sandbox (`NoNewPrivileges=no`, `ProtectSystem=strict`): sudo runs with a read-only `/run`, and `systemd-run` reaches PID 1 over its socket
 - [ ] The bridge command runs from Discord with no approval prompt (pre-approved by `command_allowlist`), while another risky command (for example `rm -rf ~/x`) still asks for approval on Discord
 - [ ] Hermes does not ask for a sudo password (no sudo prompt in the gateway; `sudo -n` fails fast otherwise)
-- [ ] Vulcain's skill shows up in Hermes (ask Vulcain which skills it has)
+- [ ] Vulcain's two skills show up in Hermes (ask Vulcain which skills it has)
 - [ ] `hermes config set command_allowlist '[...]'` stores a list in Vulcain's `config.yaml`
 - [ ] `systemd-run --wait --pipe` returns the inner exit code and output (a refused `start` of an empty token shows its error on Discord)
 - [ ] `journalctl -t usine-hermes-bridge` shows one `caller=vulcain action=... target=...` line per call

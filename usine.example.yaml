@@ -1,6 +1,6 @@
 # usine-hermes machine config: /etc/usine-hermes/usine.yaml (written by `usine-hermes init`).
 # Flat `key: value` lines only. Never put secrets here. USINE_CONFIG overrides the path.
-# The shared OpenRouter key lives next to it, root-only: openrouter.key (mode 600).
+# The OpenRouter key (memory) lives next to it, root-only: openrouter.key (mode 600).
 
 # Language of the CLI prompts and messages: en or fr (asked first at install).
 lang: en
@@ -20,9 +20,10 @@ model_gemini: gemini-3.8-flash
 model_deepseek: deepseek-flash
 
 # Discord user ids allowed to talk to every agent, comma-separated.
-# Empty means nobody is allowed.
+# Empty means nobody is allowed. Set by Vulcain (bridge allow).
 discord_allowed_users:
-# Self-hosted Honcho memory (false skips Docker and Honcho in bootstrap).
+# Self-hosted Honcho memory, turned on by Vulcain (bridge memory).
+# false skips Docker and Honcho in bootstrap.
 honcho: false
 # Your name as seen by Honcho in every profile's memory.
 peer_name: owner

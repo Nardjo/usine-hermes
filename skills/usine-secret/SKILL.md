@@ -24,4 +24,4 @@ Viewing this skill makes the terminal ask the human for `USINE_PENDING_SECRET`, 
    - a token or key for a profile: `sudo -n /usr/local/bin/usine-hermes bridge take-secret <name> <KEY>` (`DISCORD_BOT_TOKEN`, or the profile's own provider key such as `OPENROUTER_API_KEY`);
    - the OpenRouter key for memory: `sudo -n /usr/local/bin/usine-hermes bridge memory`.
    The bridge moves the value out of your `.env`, so the next view asks again.
-4. If the bridge says "no pending secret", or the prompt did not appear: tell the human to type, in this chat, `!sudo usine-hermes secret <name> [KEY]` (it asks the value hidden itself).
+4. If the bridge says "no pending secret", or the prompt did not appear: tell the human to run `sudo usine-hermes secret <name> [KEY]` in another terminal on the VPS (it asks the value hidden itself). Not as `!` in this chat: that would run as you, and you may not use sudo for it.
