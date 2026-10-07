@@ -49,7 +49,7 @@ Token du bot Discord de Vulcain (Entrée = plus tard) :
 
 Or from a clone (same result): `git clone https://github.com/Nardjo/usine-hermes && cd usine-hermes && sudo ./install.sh`.
 
-Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it with the terminal as input. It copies the CLI and templates, then chains `init` (the Discord id and the shared OpenRouter key), `bootstrap` (Hermes, Docker, Honcho), the optional Vulcain, and a `doctor` summary. Everything else has a default (home root, Hermes version, provider `openrouter`, memory on when a key is given, peer name `owner`). Re-running it asks nothing already known: the config, the stored key and an existing Vulcain are kept, and `bootstrap` skips the Hermes installer when the pinned commit is already there.
+Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it with the terminal as input. It copies the CLI and templates, then chains `init` (the Discord id and the shared OpenRouter key), `bootstrap` (Hermes, Docker, Honcho), the optional Vulcain, and ends with one next step (`doctor` gives the full report). Everything else has a default (home root, Hermes version, provider `openrouter`, memory on when a key is given, peer name `owner`). Re-running it asks nothing already known: the config, the stored key and an existing Vulcain are kept, and `bootstrap` skips the Hermes installer when the pinned commit is already there.
 
 ## Quickstart
 

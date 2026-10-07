@@ -10,7 +10,7 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
    ```sh
    curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
    ```
-   Expect exactly three questions: your Discord id, the OpenRouter key (hidden), Vulcain `[O/n]` (answer `n` for now). Expect `Honcho healthy`, `bootstrap done`, then a `doctor` summary. `/etc/usine-hermes/openrouter.key` is `root:root 600`.
+   Expect exactly three questions: your Discord id, the OpenRouter key (hidden), Vulcain `[O/n]` (answer `n` for now). Expect `Honcho healthy`, `bootstrap done`, then `✓ Installé…` with the next step. `/etc/usine-hermes/openrouter.key` is `root:root 600`.
 2. **Idempotency**: re-run the install one-liner. Expect no Discord id or key question (`config gardée`), `Hermes ... already installed, skipping installer`, `Docker with compose already installed`, `bootstrap done`; only the Vulcain question again.
 3. **Two profiles**
    ```sh
