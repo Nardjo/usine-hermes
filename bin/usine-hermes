@@ -61,7 +61,7 @@ DRY_RUN=0
 CONFIG=${USINE_CONFIG:-/etc/usine-hermes/usine.yaml}
 
 # Hermes provider ids offered by create; model keys are model_<id with - as _>.
-PROVIDERS="openrouter anthropic claude-subscription-directsdk-experimental openai-api openai-codex xai xai-oauth gemini deepseek"
+PROVIDERS="openrouter anthropic openai-api openai-codex xai xai-oauth gemini deepseek"
 
 # Run a command, or only print it (shell-quoted) under --dry-run.
 run() {
@@ -132,25 +132,17 @@ ask() {
   printf -v "$1" '%s' "$_reply"
 }
 
-# Shared OpenRouter key (Honcho + default profile key), root-only next to the config.
+# OpenRouter key of Honcho memory (and default key of openrouter profiles),
+# root-only next to the config; written by the bridge memory action.
 KEY_FILE=$(dirname "$CONFIG")/openrouter.key
 
-# Writes the config and the shared key once; a re-run keeps them, asks nothing.
+# Writes the config once; a re-run keeps it and asks nothing. The rest
+# (Discord, memory, agents) is set up later by talking to Vulcain.
 cmd_init() {
   [[ ! -e $CONFIG ]] || { t "config kept: $CONFIG" "config gardée : $CONFIG"; return; }
-  local allow key honcho=true
-  # First question, bilingual; USINE_LANG answers it (tests, scripts).
+  # The only question, bilingual; USINE_LANG answers it (tests, scripts).
   [[ -n ${USINE_LANG:-} ]] || ask UI_LANG "Language / Langue : [1] English  [2] Français  (Enter = 1)"
   if [[ $UI_LANG == 2 || $UI_LANG == fr ]]; then UI_LANG=fr; else UI_LANG=en; fi
-  ask allow "$(t "Your Discord id (Discord > Developer Mode > right-click yourself > Copy User ID):" \
-    "Ton ID Discord (Discord > Mode développeur > clic droit sur toi > Copier l'identifiant) :")"
-  allow=${allow// /}
-  [[ -n $allow ]] || die "$(t "a Discord id is needed: only its owner may talk to the agents" \
-    "il faut un ID Discord : seul son propriétaire peut parler aux agents")" 2
-  check_value discord_allowed_users "$allow"
-  secret key "$(t "OpenRouter key (memory + agents, hidden, Enter = no memory):" \
-    "Clé OpenRouter (mémoire + agents, saisie masquée, Entrée = sans mémoire) :")"
-  [[ -n $key ]] || honcho=false
 
   run mkdir -p "$(dirname "$CONFIG")"
   # Owned by the caller (root on a VPS); readable, it holds no secrets.
@@ -161,21 +153,18 @@ home_root: /var/lib/usine-hermes
 hermes_version: v2026.9.24
 model_openrouter: z-ai/glm-5.2
 model_anthropic: claude-sonnet-4-6
-model_claude_subscription_directsdk_experimental: sonnet
 model_openai_api: gpt-6-sol
 model_openai_codex: gpt-6-sol
 model_xai: grok-4.6
 model_xai_oauth: grok-4.6
 model_gemini: gemini-3.8-flash
 model_deepseek: deepseek-flash
-discord_allowed_users: $allow
-honcho: $honcho
+discord_allowed_users:
+honcho: false
 peer_name: owner
 honcho_url: http://127.0.0.1:8000
 max_profiles: 10
 EOF
-  # printf is a builtin: the key never reaches a process argv.
-  [[ -z $key ]] || printf '%s\n' "$key" | write_file 600 "$EUID" "$KEY_FILE" secret
 }
 
 HERMES_REPO=https://github.com/NousResearch/hermes-agent
@@ -431,13 +420,9 @@ as_profile() {
 # Limits shown before a subscription login.
 sub_warning() {
   case $1 in
-    claude-subscription-directsdk-experimental)
-      t "Claude subscription runs through Hermes' experimental claude-subscription-directsdk plugin:
-it may break on upgrades, bills your Agent SDK allowance (~1.7x a normal session),
-needs a Max plan plus extra-usage credits, and refuses ANTHROPIC_* variables in .env." \
-        "L'abonnement Claude passe par le plugin expérimental claude-subscription-directsdk de Hermes :
-il peut casser aux mises à jour, consomme ton quota Agent SDK (~1,7x une session normale),
-exige un plan Max avec des crédits d'usage supplémentaires, et refuse les variables ANTHROPIC_* dans .env." ;;
+    anthropic)
+      t "Claude subscription: only a Max plan with purchased extra-usage credits works (not Pro)." \
+        "Abonnement Claude : seul un plan Max avec des crédits d'usage supplémentaires achetés marche (pas Pro)." ;;
     openai-codex)
       t "ChatGPT subscription (openai-codex): the plan quota for agent use is undocumented;
 a busy bot may hit limits without notice." \
@@ -452,12 +437,7 @@ vérifie ta formule si le bot ne reçoit que des refus." ;;
 }
 
 # Interactive login as the profile user (device or paste code, no browser on the VPS).
-sub_login() {
-  case $2 in
-    claude-subscription-directsdk-experimental) as_profile "$1" claude auth login ;;
-    *) as_profile "$1" hermes auth add "$2" ;;
-  esac
-}
+sub_login() { as_profile "$1" hermes auth add "$2"; }
 
 # secret <var> <prompt>: hidden answer, Enter leaves it empty.
 secret() {
@@ -606,14 +586,8 @@ cmd_create() {
     as_profile "$name" hermes config set memory.provider honcho
   fi
 
-  if [[ $provider == claude-subscription-directsdk-experimental ]]; then
-    # Native installer puts claude in ~/.local/bin of the profile.
-    as_profile "$name" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
-    as_profile "$name" hermes plugins install claude-subscription-directsdk
-  fi
-
   # printf is a builtin: secrets never reach a process argv. No key line for
-  # subscriptions (the Claude plugin refuses ANTHROPIC_* in .env).
+  # subscriptions.
   { [[ -z $key_name ]] || printf '%s=%s\n' "$key_name" "$key"
     printf 'DISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
       "$token" "$(cfg discord_allowed_users)"; } |
@@ -629,7 +603,7 @@ cmd_create() {
     sub_login "$name" "$provider"
   else
     t "Log in later, as root:" "Connexion à faire plus tard, en root :"
-    DRY_RUN=1 sub_login "$name" "$provider" | sed 's/^+ /  sudo /'
+    echo "  sudo usine-hermes model $name"
   fi
   [[ -n $key_name && -z $key ]] &&
     t "Key to set: sudo usine-hermes secret $name $key_name" "Clé à saisir : sudo usine-hermes secret $name $key_name"
@@ -675,6 +649,24 @@ secret_keys() {
   key_var "$(provider_of "$1")"
 }
 
+# env_read <name>: the profile .env, read as the profile (a planted link
+# cannot make root copy another file).
+env_read() {
+  if [[ $DRY_RUN == 1 ]]; then cat "$(env_file "$1")" 2>/dev/null || true
+  else runuser -u "$1" -- cat "$(env_file "$1")" 2>/dev/null || true; fi
+}
+
+# env_set <name> <KEY> [value]: replace or append KEY in the profile .env;
+# without a value, remove it. printf and here-strings keep values off any argv.
+env_set() {
+  local new
+  new=$(grep -v "^$2=" <<<"$(env_read "$1")" | grep -v "^\$" || true)
+  [[ $# -lt 3 ]] || printf -v new '%s\n%s=%s' "$new" "$2" "$3"
+  new=${new#$'\n'}
+  [[ $DRY_RUN == 0 ]] || echo "# .env keys: $(cut -d= -f1 <<<"$new" | paste -sd' ' -)"
+  printf '%s\n' "$new" | write_file 600 "$1:$1" "$(env_file "$1")" secret
+}
+
 # secret <name> [KEY]: no KEY is the Discord token, then a stopped profile starts.
 cmd_secret() {
   local name=$1 key=${2:-DISCORD_BOT_TOKEN} unit
@@ -683,21 +675,13 @@ cmd_secret() {
     die "$(t "unknown key: '$key' (allowed: $(secret_keys "$name" | paste -sd' ' -))" \
       "clé inconnue : '$key' (autorisées : $(secret_keys "$name" | paste -sd' ' -))")" 2
   need_root secret
-  local env value old new
-  env=$(env_file "$name") unit=$(unit_of "$name")
+  local value
+  unit=$(unit_of "$name")
   if [[ $# -eq 1 ]]; then ask_token value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
   else secret value "$(t "$key for $name (hidden):" "$key pour $name (saisie masquée) :")"; fi
   [[ -n $value ]] || die "$(t "empty value, $key unchanged" "valeur vide, $key inchangée")"
   [[ $key != DISCORD_BOT_TOKEN ]] || check_token "$name" "$value"
-  # Read as the profile: a planted link cannot make root copy another file.
-  if [[ $DRY_RUN == 1 ]]; then old=$(cat "$env" 2>/dev/null) || old=
-  else old=$(runuser -u "$name" -- cat "$env" 2>/dev/null) || old=; fi
-  # Replace or append; printf and here-strings keep the value off any argv.
-  new=$(grep -v "^$key=" <<<"$old" | grep -v "^\$" || true)
-  printf -v new '%s\n%s=%s' "$new" "$key" "$value"
-  new=${new#$'\n'}
-  [[ $DRY_RUN == 0 ]] || echo "# .env keys: $(cut -d= -f1 <<<"$new" | paste -sd' ' -)"
-  printf '%s\n' "$new" | write_file 600 "$name:$name" "$env" secret
+  env_set "$name" "$key" "$value"
   t "$key set for $name" "$key enregistrée pour $name"
   if systemctl is-active "$unit" >/dev/null 2>&1; then
     t "$name is running: apply with sudo usine-hermes restart $name" "$name tourne : applique avec sudo usine-hermes restart $name"
@@ -705,6 +689,53 @@ cmd_secret() {
     started "$name" || exit 1
     t "✓ $name started. Mention @$name on Discord." "✓ $name démarrée. Mentionne @$name sur Discord."
   fi
+}
+
+# model <name>: pick a provider, log in or give its key, then restart if running.
+cmd_model() {
+  local name=$1 choice="" provider login=0 key_name="" value=""
+  need_managed "$name"
+  need_root model
+  t "Which model for $name?
+  1) ChatGPT (Codex subscription)
+  2) Claude (Max subscription + credits)
+  3) OpenRouter (API key)
+  4) Anthropic (API key)
+  5) OpenAI (API key)
+  6) xAI (API key)   7) SuperGrok (subscription)   8) Gemini (API key)   9) DeepSeek (API key)" \
+    "Quel modèle pour $name ?
+  1) ChatGPT (abonnement Codex)
+  2) Claude (abonnement Max + crédits)
+  3) OpenRouter (clé API)
+  4) Anthropic (clé API)
+  5) OpenAI (clé API)
+  6) xAI (clé API)   7) SuperGrok (abonnement)   8) Gemini (clé API)   9) DeepSeek (clé API)" >&2
+  ask choice "$(t "Choice (Enter = 1):" "Choix (Entrée = 1) :")"
+  case ${choice:-1} in
+    1) provider=openai-codex login=1 ;;
+    2) provider=anthropic login=1 ;;
+    3) provider=openrouter ;;
+    4) provider=anthropic ;;
+    5) provider=openai-api ;;
+    6) provider=xai ;;
+    7) provider=xai-oauth login=1 ;;
+    8) provider=gemini ;;
+    9) provider=deepseek ;;
+    *) die "$(t "invalid choice: $choice" "choix invalide : $choice")" 2 ;;
+  esac
+  if [[ $login == 1 ]]; then
+    sub_warning "$provider" >&2
+  else
+    key_name=$(key_var "$provider")
+    secret value "$(t "$key_name for $name (hidden):" "$key_name pour $name (saisie masquée) :")"
+    [[ -n $value ]] || die "$(t "empty value, nothing changed" "valeur vide, rien n'a changé")"
+  fi
+  as_profile "$name" hermes config set model.provider "$provider"
+  as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
+  if [[ $login == 1 ]]; then sub_login "$name" "$provider"; else env_set "$name" "$key_name" "$value"; fi
+  echo "provider=$provider" | write_file 644 root:root "$REGISTRY/$name"
+  if systemctl is-active "$(unit_of "$name")" >/dev/null 2>&1; then run systemctl restart "$(unit_of "$name")"; fi
+  t "✓ $name uses $provider." "✓ $name utilise $provider."
 }
 
 cmd_status() {
@@ -884,8 +915,8 @@ main() {
   shift || true
   case $cmd in
     help | -h | --help) usage ;;
-    create | start | stop | restart | status | logs | destroy | secret) check_name "${1:-}" ;;&
-    create | start | stop | restart | status | logs | destroy | secret | list | config | bootstrap | doctor | bridge)
+    create | start | stop | restart | status | logs | destroy | secret | model) check_name "${1:-}" ;;&
+    create | start | stop | restart | status | logs | destroy | secret | model | list | config | bootstrap | doctor | bridge)
       check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
@@ -896,6 +927,7 @@ main() {
       ;;
     status) cmd_status "$1" ;;
     secret) cmd_secret "$@" ;;
+    model) cmd_model "$1" ;;
     logs) cmd_logs "$@" ;;
     list) cmd_list ;;
     init) cmd_init ;;
