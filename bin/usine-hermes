@@ -17,7 +17,8 @@ Sans commande : ouvre le chat avec Vulcain dans le terminal (demande d'abord son
 Commandes :
   init                 demande la langue, écrit la config une fois
   config <clé>         affiche une valeur de config
-  bootstrap            installe Hermes, Docker et Honcho (idempotent)
+  bootstrap            installe Hermes (idempotent)
+  memory               active la mémoire Honcho (demande la clé OpenRouter)
   create <nom> [--mission T] [--personality T] [--provider P] [--preset vulcain]
                        crée un profil isolé ; le démarre si un token est donné
   secret <nom> [CLÉ]   définit le token Discord (puis démarre) ou une CLÉ (masquée)
@@ -44,7 +45,8 @@ No command: open the terminal chat with Vulcain (asks its model first).
 Commands:
   init                 ask the language, write the config once
   config <key>         print one config value
-  bootstrap            install Hermes, Docker and Honcho (idempotent)
+  bootstrap            install Hermes (idempotent)
+  memory               turn on Honcho memory (asks the OpenRouter key)
   create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]
                        create an isolated profile; starts it if given a token
   secret <name> [KEY]  set the Discord token (then start) or one KEY (hidden)
@@ -782,17 +784,23 @@ cmd_allow() {
   done
 }
 
-# memory <from>: Honcho on, with the OpenRouter key <from> captured (or the
-# stored one), wired into every profile.
+# memory [from]: Honcho on, wired into every profile. The OpenRouter key comes
+# from <from>'s capture (Vulcain's bridge), the stored one, or a hidden prompt
+# when the human runs it with no name.
 cmd_memory() {
-  local from=$1 key p
+  local from=${1:-} key="" p
   need_root memory
-  need_managed "$from"
-  key=$(pending "$from")
+  if [[ -n $from ]]; then
+    need_managed "$from"
+    key=$(pending "$from")
+  elif [[ ! -r $KEY_FILE ]]; then
+    secret key "$(t "OpenRouter key for the memory (hidden, https://openrouter.ai/keys):" \
+      "Clé OpenRouter pour la mémoire (saisie masquée, https://openrouter.ai/keys) :")"
+  fi
   if [[ -n $key ]]; then
     # printf is a builtin: the key never reaches a process argv.
     printf '%s\n' "$key" | write_file 600 root:root "$KEY_FILE" secret
-    env_set "$from" USINE_PENDING_SECRET
+    [[ -z $from ]] || env_set "$from" USINE_PENDING_SECRET
   fi
   [[ -n $key || -r $KEY_FILE ]] || die "$(t "memory needs an OpenRouter key: capture it with the usine-secret skill first" \
     "la mémoire a besoin d'une clé OpenRouter : capture-la d'abord avec le skill usine-secret")"
@@ -1047,7 +1055,7 @@ main() {
     chat) check_config; cmd_chat ;;
     create | start | stop | restart | status | logs | destroy | secret | model) check_name "${1:-}" ;;&
     take-secret) check_name "${1:-}"; check_name "${2:-}" ;;&
-    memory) check_name "${1:-}" ;;&
+    memory) [[ -z ${1:-} ]] || check_name "$1" ;;&
     create | start | stop | restart | status | logs | destroy | secret | model | take-secret | memory | allow | list | config | bootstrap | doctor | bridge)
       check_config ;;&
     create) cmd_create "$@" ;;
@@ -1062,7 +1070,7 @@ main() {
     model) cmd_model "$1" ;;
     take-secret) cmd_take_secret "$1" "$2" "${3:-}" ;;
     allow) cmd_allow "${1:-}" ;;
-    memory) cmd_memory "$1" ;;
+    memory) cmd_memory "${1:-}" ;;
     logs) cmd_logs "$@" ;;
     list) cmd_list ;;
     init) cmd_init ;;

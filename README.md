@@ -62,7 +62,7 @@ Back later: `sudo usine-hermes` (over SSH: `ssh -t <vps> sudo usine-hermes`).
 
 ## Quickstart
 
-In the chat, Vulcain offers, one at a time: its own Discord bot (it walks you through the Developer Portal, asks your Discord user id, takes the token hidden and starts), memory (an OpenRouter key, hidden), then your first agent. Secrets never go through the chat: Vulcain's `usine-secret` skill makes the terminal ask them hidden (see below).
+In the chat, Vulcain offers, one at a time: its own Discord bot (it walks you through the Developer Portal, asks your Discord user id, takes the token hidden and starts), memory (an OpenRouter key, hidden; or run `sudo usine-hermes memory` yourself), then your first agent. Secrets never go through the chat: Vulcain's `usine-secret` skill makes the terminal ask them hidden (see below).
 
 Everything also works by hand:
 
@@ -101,6 +101,7 @@ How it works: the bridge is a hidden subcommand of the root-owned CLI. It re-val
 | `init` | Asks the language (`[1] English  [2] Français`, skipped when `USINE_LANG` is set) and writes `/etc/usine-hermes/usine.yaml` (no Discord id yet, `honcho: false`). Does nothing if the config exists. `USINE_CONFIG` overrides the path; the OpenRouter key and the profile registry (`profiles/`) live next to it. |
 | `config <key>` | Prints one config value. |
 | `bootstrap` | Installs prerequisites, Hermes at the pinned tag, pre-installs the Discord and Honcho deps into the shared venv, then (if `honcho: true`, set by the bridge `memory` action) Docker from Docker's apt repo and the Honcho stack, using the stored OpenRouter key. Waits up to 180 s for Honcho health. Asks nothing. |
+| `memory` | Turns Honcho memory on: asks the OpenRouter key hidden (unless one is stored), installs Docker and Honcho, wires every profile and restarts the running ones. The same as Vulcain's bridge `memory` action. |
 | `create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]` | Asks what the agent does (unless `--mission`) and its Discord bot token (hidden; Enter = later). Creates the Linux user, home, `SOUL.md` (default personality unless `--personality`), model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in, then starts it if a token was given; otherwise prints the one `secret` command. Provider `openrouter` by default, with the stored key (memory on) copied into the profile's `.env` (`600`), else asked; `--provider P` asks that provider's key or offers its subscription login. A reused token is refused before anything is created. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user; an already managed name (including a half-created profile) is refused with a pointer to `destroy`. With `--mission` and stdin not a terminal (a script, a coding agent, Vulcain), it never prompts: the token stays empty, subscription login is skipped, and it prints the commands to run next. `--preset vulcain` makes the operator profile (section above): no question, no model, no token. |
 | `model <name>` | The provider menu above: sets `model.provider` and `model.default` (from the config), runs the login as the profile user (`hermes auth add openai-codex|anthropic|xai-oauth`) or asks the key hidden into its `.env`, records the provider in the registry, restarts the profile if it runs. |
 | `secret <name> [KEY]` | Without `KEY`: asks (hidden) the Discord bot token (refuses anything not shaped like one, or used by another profile), prints the invite link, then starts the profile if it is stopped. With `KEY`: asks one value and writes or replaces it. Values go to the profile's `.env` (mode `600`, owned by the profile) and are never printed. `KEY` is `DISCORD_BOT_TOKEN` or the key variable of the profile's own provider (table below; none for subscriptions); managed profiles only; an empty value changes nothing. Says to `restart` if the profile is running. |
@@ -154,7 +155,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 | `hermes_version` | `v2026.9.24` | Hermes tag, resolved to its commit and installed once. |
 | `model_<provider>` | see table above | Default model per provider (`-` in the id becomes `_`). |
 | `discord_allowed_users` | empty | Comma-separated Discord user ids. Empty: nobody is allowed. Set by the bridge `allow` (config and every `.env`); copied into each profile's `.env` at `create`. |
-| `honcho` | `false` | `true` once the bridge `memory` action ran; `false` skips Docker, Honcho and memory config. |
+| `honcho` | `false` | `true` once `memory` ran (yours or Vulcain's); `false` skips Docker, Honcho and memory config. |
 | `peer_name` | `owner` | Your name as a peer in Honcho. |
 | `honcho_url` | `http://127.0.0.1:8000` | Honcho API used by bootstrap and profiles. |
 | `max_profiles` | `10` | Most managed profiles (operator included) a Vulcain operator may reach with `create`. Read only by the bridge. |
