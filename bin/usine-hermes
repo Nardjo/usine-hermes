@@ -237,7 +237,7 @@ bootstrap_hermes() {
     run curl -fsSL -o "$installer" \
       "https://raw.githubusercontent.com/NousResearch/hermes-agent/$sha/scripts/install.sh"
     # No --dir: it would break the system layout (launcher in /usr/local/bin).
-    run bash "$installer" --commit "$sha" --non-interactive --skip-browser \
+    run bash "$installer" --commit "$sha" --non-interactive --skip-setup --skip-browser \
       --skip-computer-use --hermes-home "$ROOT_HERMES_HOME"
     run rm -f "$installer"
   fi

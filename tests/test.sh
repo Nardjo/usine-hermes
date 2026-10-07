@@ -130,7 +130,7 @@ expect "bootstrap: installer fetched at the resolved sha" 0 \
   "raw\.githubusercontent\.com/NousResearch/hermes-agent/\\\\?<sha-of-v2026\.9\.24\\\\?>/scripts/install\.sh" -- bs
 if bs 2>&1 | grep -c >/dev/null "hermes-agent/v2026"; then ko "bootstrap: installer not fetched by tag"; else ok "bootstrap: installer not fetched by tag"; fi
 expect "bootstrap: installer pinned and non-interactive" 0 \
-  "--commit \\\\?<sha-of-v2026\.9\.24\\\\?> --non-interactive --skip-browser --skip-computer-use" -- bs
+  "--commit \\\\?<sha-of-v2026\.9\.24\\\\?> --non-interactive --skip-setup --skip-browser --skip-computer-use" -- bs
 expect "bootstrap: root HERMES_HOME via installer flag" 0 "install.* --hermes-home /root/\.hermes" -- bs
 if bs 2>&1 | grep -c >/dev/null "HERMES_HOME="; then ko "bootstrap: no HERMES_HOME env"; else ok "bootstrap: no HERMES_HOME env"; fi
 if bs 2>&1 | grep -c >/dev/null -- "--dir"; then ko "bootstrap: no --dir"; else ok "bootstrap: no --dir"; fi
