@@ -21,7 +21,6 @@ expect() {
 }
 
 expect "help exits 0 and lists commands" 0 "create" -- "$cli" help
-expect "no args shows help" 0 "Usage" -- "$cli"
 expect "unknown command exits 2" 2 "unknown command" -- "$cli" frobnicate
 
 # Profile names: ^[a-z][a-z0-9-]{1,30}$ (2..31 chars).
@@ -38,6 +37,9 @@ expect "name checked by start too" 2 "invalid name" -- "$cli" start Bad
 # install.sh refuses unsupported OSes, then non-root runs.
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
+# Example config with Honcho memory on (init leaves it off until enabled).
+mkdir -p "$tmp/ex"; ex="$tmp/ex/usine.yaml"
+sed 's/^honcho:.*/honcho: true/' "$root/usine.example.yaml" >"$ex"
 osr() { printf 'ID=%s\nVERSION_ID="%s"\n' "$1" "$2" >"$tmp/$1-$2"; echo "$tmp/$1-$2"; }
 expect "install: missing os-release refused" 1 "unsupported OS" -- \
   env USINE_OS_RELEASE="$tmp/nope" "$BASH" "$root/install.sh"
@@ -58,55 +60,39 @@ if [[ $EUID -ne 0 ]]; then
   done
 fi
 
-# init: asks only the Discord id and the shared OpenRouter key; USINE_CONFIG
-# points at a non-root path, the key file lives next to it.
+# init: asks only the language; USINE_CONFIG points at a non-root path.
 cfgf="$tmp/etc/usine.yaml"; keyf="$tmp/etc/openrouter.key"
 uc() { env USINE_LANG=fr USINE_CONFIG="$cfgf" "$cli" "$@"; }
 expect "config without file points to init" 1 "usine-hermes init" -- uc config home_root
-expect "init asks the Discord id" 0 "Ton ID Discord \(Discord > Mode développeur > clic droit sur toi > Copier l'identifiant\) :" -- uc init --dry-run <<<123
-expect "init asks the OpenRouter key" 0 "Clé OpenRouter \(mémoire \+ agents, saisie masquée, Entrée = sans mémoire\) :" -- uc init --dry-run <<<123
-expect "init: USINE_LANG=en asks in English" 0 "Your Discord id \(Discord > Developer Mode > right-click yourself > Copy User ID\):" -- \
-  env USINE_LANG=en USINE_CONFIG="$cfgf" "$cli" init --dry-run <<<123
-expect "init: USINE_LANG=en key prompt in English" 0 "OpenRouter key \(memory \+ agents, hidden, Enter = no memory\):" -- \
-  env USINE_LANG=en USINE_CONFIG="$cfgf" "$cli" init --dry-run <<<123
-expect "init: USINE_LANG stored, not asked" 0 "^\| lang: fr$" -- uc init --dry-run <<<123
-if uc init --dry-run <<<123 2>&1 | grep -c >/dev/null "Langue"; then ko "init: USINE_LANG set, no language question"; else ok "init: USINE_LANG set, no language question"; fi
-# Without USINE_LANG: the language is the first question.
+expect "init: USINE_LANG stored, not asked" 0 "^\| lang: fr$" -- uc init --dry-run
+if [[ -n $(uc init --dry-run 2>&1 >/dev/null) ]]; then ko "init: USINE_LANG set, asks nothing"; else ok "init: USINE_LANG set, asks nothing"; fi
+# Without USINE_LANG: the language is the only question.
 li() { env -u USINE_LANG USINE_CONFIG="$tmp/l/usine.yaml" "$cli" "$@"; }
-expect "init asks the language first" 0 "^Language / Langue : \[1\] English  \[2\] Français  \(Enter = 1\) Your Discord id" -- li init --dry-run <<<$'\n123'
-expect "init: Enter = English" 0 "^\| lang: en$" -- li init --dry-run <<<$'\n123'
-expect "init: 2 = Français, next prompts in French" 0 "Ton ID Discord" -- li init --dry-run <<<$'2\n123'
-expect "init: 2 stores lang fr" 0 "^\| lang: fr$" -- li init --dry-run <<<$'2\n123'
-li init <<<$'2\n123' >/dev/null 2>&1
+asked=$(li init --dry-run 2>&1 >/dev/null <<<'')
+if [[ $asked == "Language / Langue : [1] English  [2] Français  (Enter = 1) " ]]; then ok "init asks the language only"; else ko "init asks the language only: $asked"; fi
+expect "init: Enter = English" 0 "^\| lang: en$" -- li init --dry-run <<<''
+expect "init: 2 stores lang fr" 0 "^\| lang: fr$" -- li init --dry-run <<<2
+li init <<<2 >/dev/null 2>&1
 expect "init: lang stored in config" 0 "^fr$" -- li config lang
 if li init <<<x 2>&1 | grep -c >/dev/null "Langue"; then ko "init re-run: language not asked again"; else ok "init re-run: language not asked again"; fi
 expect "config lang drives the CLI (no USINE_LANG)" 1 "pas un profil géré" -- li status nobody
-expect "init --dry-run prints the config" 0 "write $cfgf" -- uc init --dry-run <<<123
+expect "init --dry-run prints the config" 0 "write $cfgf" -- uc init --dry-run
 if [[ -e $cfgf ]]; then ko "init --dry-run writes nothing"; else ok "init --dry-run writes nothing"; fi
-expect "init needs a Discord id" 2 "Discord" -- uc init </dev/null
-expect "init rejects a bad Discord id" 2 "discord" -- uc init <<<abc
-expect "rejected init writes nothing" 1 "usine-hermes init" -- uc config home_root
-echo keep >"$tmp/other"; mkdir -p "$tmp/etc"; ln -f "$tmp/other" "$keyf"
-expect "init with id + key" 0 "" -- uc init <<<$'123, 456\nsk-or-shared-secret'
-if [[ $(cat "$tmp/other") == keep ]]; then ok "init never writes through a link"; else ko "init never writes through a link"; fi
-if [[ $(cat "$keyf") == sk-or-shared-secret && -n $(find "$keyf" -perm 600) ]]; then ok "init stores the shared key 600"; else ko "init stores the shared key 600"; fi
-if uc init <<<x 2>&1 | grep -cE >/dev/null "Ton ID|Clé"; then ko "init re-run asks nothing"; else ok "init re-run asks nothing"; fi
-expect "init re-run keeps the config" 0 "^123,456$" -- uc config discord_allowed_users
+expect "init writes the config" 0 "" -- uc init
+if [[ -e $keyf ]]; then ko "init stores no key"; else ok "init stores no key"; fi
+if uc init <<<x 2>&1 | grep -c >/dev/null "Langue"; then ko "init re-run asks nothing"; else ok "init re-run asks nothing"; fi
+expect "init: no Discord id yet" 0 "^$" -- uc config discord_allowed_users
+expect "init: memory off until enabled" 0 "^false$" -- uc config honcho
 expect "config reads home_root default" 0 "^/var/lib/usine-hermes$" -- uc config home_root
 expect "config reads pinned hermes_version" 0 "^v2026\.9\.24$" -- uc config hermes_version
 expect "config reads per-provider model" 0 "^z-ai/glm-5\.2$" -- uc config model_openrouter
-expect "config reads dashed provider model" 0 "^sonnet$" -- uc config model_claude_subscription_directsdk_experimental
-expect "honcho on with a key" 0 "^true$" -- uc config honcho
+expect "config reads dashed provider model" 0 "^gpt-6-sol$" -- uc config model_openai_codex
 expect "config reads peer_name default" 0 "^owner$" -- uc config peer_name
 expect "config reads honcho_url" 0 "^http://127\.0\.0\.1:8000$" -- uc config honcho_url
 expect "config unknown key fails" 1 "clé de config inconnue" -- uc config nope
 if grep -qiE "key|token|secret|password" <(grep -v '^#' "$cfgf" | cut -d: -f1); then ko "config holds no secret keys"; else ok "config holds no secret keys"; fi
-if grep -q sk-or-shared "$cfgf"; then ko "config holds no secret"; else ok "config holds no secret"; fi
 keys() { grep -E '^[a-z_]+:' "$1" | cut -d: -f1 | sort; }
 if [[ "$(keys "$cfgf")" == "$(keys "$root/usine.example.yaml")" ]]; then ok "example has same keys as init"; else ko "example has same keys as init"; fi
-env USINE_LANG=en USINE_CONFIG="$tmp/etc2/usine.yaml" "$cli" init <<<123 >/dev/null 2>&1
-expect "init without key: honcho off" 0 "^false$" -- env USINE_CONFIG="$tmp/etc2/usine.yaml" "$cli" config honcho
-if [[ -e $tmp/etc2/openrouter.key ]]; then ko "init without key stores none"; else ok "init without key stores none"; fi
 expect "config reads example via USINE_CONFIG" 0 "^gpt-6-sol$" -- \
   env USINE_CONFIG="$root/usine.example.yaml" "$cli" config model_openai_api
 # Loaded config is validated too (it feeds sed, honcho.json and rm -rf paths).
@@ -122,7 +108,7 @@ expect "load rejects bad hermes_version" 2 "invalid hermes_version" -- badc herm
 expect "load rejects bad peer_name" 2 "invalid peer_name" -- badc peer_name '"x' config honcho
 
 # bootstrap --dry-run: planned Hermes install, no root, no network.
-bs() { env USINE_CONFIG="$root/usine.example.yaml" "$cli" bootstrap --dry-run; }
+bs() { env USINE_CONFIG="$ex" "$cli" bootstrap --dry-run; }
 expect "bootstrap: apt prereqs" 0 "apt-get install -y .*git.*curl" -- bs
 expect "bootstrap: tag resolved via ls-remote" 0 \
   "git ls-remote https://github.com/NousResearch/hermes-agent .*refs/tags/v2026\.9\.24" -- bs
@@ -147,13 +133,13 @@ fi
 
 # create --dry-run: full plan, no root. With every flag but no token on a
 # non-TTY stdin it never prompts and does not start.
-cr() { env USINE_CONFIG="$root/usine.example.yaml" "$cli" create "$@" --dry-run; }
+cr() { env USINE_CONFIG="$ex" "$cli" create "$@" --dry-run; }
 crf() { cr ab --personality "dry wit" --mission "watch the logs" --provider anthropic; }
 expect "create: system nologin user + own group" 0 \
   "useradd --system --user-group --home-dir /var/lib/usine-hermes/ab --no-create-home --shell /usr/sbin/nologin ab" -- crf
 expect "create: private home 700 owned by profile" 0 "install -d -m 700 -o ab -g ab /var/lib/usine-hermes/ab" -- crf
 # Root-owned registry next to the config (here the repo root), right after useradd.
-expect "create: ownership marker in root registry" 0 "write $root/profiles/ab \(mode 644, owner root:root\)" -- crf
+expect "create: ownership marker in root registry" 0 "write $tmp/ex/profiles/ab \(mode 644, owner root:root\)" -- crf
 expect "create: marker records the provider" 0 "^\| provider=anthropic$" -- crf
 if crf 2>&1 | grep -A2 "useradd" | grep -c >/dev/null "profiles/ab "; then ok "create: marker right after useradd"; else ko "create: marker right after useradd"; fi
 if crf 2>&1 | grep -c >/dev/null "lib/usine-hermes/ab/\.usine-hermes"; then ko "create: no marker in profile home"; else ok "create: no marker in profile home"; fi
@@ -176,6 +162,7 @@ expect "create: daemon-reload" 0 "systemctl daemon-reload" -- crf
 expect "create: no token: one secret command" 0 "^  sudo usine-hermes secret ab$" -- crf
 if crf 2>&1 | grep -cE >/dev/null "systemctl (enable|start)"; then ko "create: no token, not started"; else ok "create: no token, not started"; fi
 if crf 2>&1 | grep -cE >/dev/null "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
+expect "create: experimental Claude plugin gone" 2 "unknown provider" -- cr ab --provider claude-subscription-directsdk-experimental
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
 # Default create: two questions, shared OpenRouter key, starts when a token is given.
 mkdir -p "$tmp/shared"; scfg="$tmp/shared/usine.yaml"
@@ -187,8 +174,8 @@ if [[ $asked == "What should alice do? (one sentence): Discord bot token for ali
 expect "create: English start line" 0 "✓ alice created and started\. Mention @alice on Discord\." -- cse alice <<<$'w\ntok.alice.1234567890'
 expect "create: English later line" 0 "✓ alice created\. Once you have the bot token, it starts with:" -- cse alice <<<$'w\n'
 expect "create: English key prompt" 0 "ANTHROPIC_API_KEY for ab \(hidden\):" -- cse ab --provider anthropic <<<$'w\n'
-expect "create: English subscription warning" 0 "may break on upgrades" -- cse ab --provider claude-subscription-directsdk-experimental <<<$'w\n'
-expect "create: French subscription warning" 0 "peut casser" -- cs ab --provider claude-subscription-directsdk-experimental <<<$'w\n'
+expect "create: English subscription warning" 0 "undocumented" -- cse ab --provider openai-codex <<<$'w\n'
+expect "create: French subscription warning" 0 "pas documenté" -- cs ab --provider openai-codex <<<$'w\n'
 expect "create: French error" 2 "fournisseur inconnu" -- cs ab --provider nope
 expect "create: asks what it does" 0 "Que doit faire alice \? \(une phrase\) :" -- cs alice <<<$'watch prices\n'
 expect "create: asks the bot token (d')" 0 "Token du bot Discord d'alice \(Entrée = plus tard\) :" -- cs alice <<<$'watch prices\n'
@@ -213,25 +200,15 @@ expect "create: --provider asks that key" 0 "ANTHROPIC_API_KEY pour ab \(saisie 
 expect "create: --personality written" 0 "^\| dry wit$" -- cs ab --personality "dry wit" <<<$'w\n'
 # Subscription providers: warning, y/N login as the profile user, or a follow-up command.
 sub() { cr ab --personality p --mission m --provider "$@"; }
-claude="claude-subscription-directsdk-experimental"
 # Missing --mission keeps it interactive: Enter for the mission, then the login answer.
 subi() { cr ab --personality p --provider "$@"; }
-expect "sub: claude warns experimental" 0 "1\.7x" -- sub $claude
 expect "sub: codex warns quota" 0 "quota" -- sub openai-codex
 expect "sub: supergrok warns 403" 0 "403" -- sub xai-oauth
-expect "sub: claude provider set" 0 "hermes config set model\.provider $claude" -- sub $claude
-expect "sub: claude model from config" 0 "hermes config set model\.default sonnet" -- sub $claude
-expect "sub: claude CLI installed as profile" 0 "runuser -u ab -- .*claude\.ai/install\.sh" -- sub $claude
-expect "sub: plugin installed as profile" 0 \
-  "runuser -u ab -- .*hermes plugins install claude-subscription-directsdk" -- sub $claude
-expect "sub: claude login as profile on y" 0 "^\+ runuser -u ab -- .*HOME=/var/lib/usine-hermes/ab .*claude auth login" -- subi $claude <<<$'\ny'
 expect "sub: codex login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add openai-codex" -- subi openai-codex <<<$'\ny'
 expect "sub: supergrok login as profile on y" 0 "^\+ runuser -u ab -- .*hermes auth add xai-oauth" -- subi xai-oauth <<<$'\ny'
 expect "sub: skip prints follow-up command" 0 "later" -- sub openai-codex
-expect "sub: follow-up is the login as profile" 0 "^ *sudo runuser -u ab -- .*hermes auth add openai-codex" -- sub openai-codex
+expect "sub: follow-up is the model command" 0 "^ *sudo usine-hermes model ab$" -- sub openai-codex
 if sub openai-codex 2>&1 | grep -c >/dev/null "^+ .*auth add"; then ko "sub: skip runs no login"; else ok "sub: skip runs no login"; fi
-if sub $claude 2>&1 | grep -cE >/dev/null "_API_KEY"; then ko "sub: no API key asked or written"; else ok "sub: no API key asked or written"; fi
-expect "sub: unit PATH finds the profile's claude CLI" 0 "^\| Environment=PATH=/var/lib/usine-hermes/ab/\.local/bin:" -- sub $claude
 # All flags + stdin not a TTY (tests run on /dev/null): no prompt at all.
 prompts="Que doit|What should|Token du bot|bot token for|saisie masquée|\(hidden\)|\[o/N\]|\[y/N\]"
 if crf 2>&1 | grep -cE >/dev/null "$prompts"; then ko "create: flags, no TTY: no prompt"; else ok "create: flags, no TTY: no prompt"; fi
@@ -241,12 +218,15 @@ if sub openai-codex 2>&1 | grep -c >/dev/null "secret ab .*_API_KEY"; then ko "c
 expect "create: unknown flag rejected" 2 "unknown flag" -- cr ab --nope x
 expect "create: existing non-managed user refused" 1 "non-managed" -- cr root --provider anthropic
 # Vulcain preset: an operator profile that creates profiles through the bridge.
-vc() { cr vul --preset vulcain --provider openrouter; }
+vc() { cr vul --preset vulcain; }
 hh=/var/lib/usine-hermes/vul/.hermes
 expect "preset: unknown preset rejected" 2 "unknown preset" -- cr vul --preset nope --provider openrouter
 expect "preset: Vulcain SOUL installed" 0 "write $hh/SOUL\.md \(mode 644, owner vul:vul\)" -- vc
 expect "preset: SOUL never handles secrets" 0 "^\| .*[Nn]ever ask.*secret" -- vc
-expect "preset: skill dir owned by profile" 0 "install -d -m 700 -o vul -g vul $hh/skills $hh/skills/usine-hermes$" -- vc
+expect "preset: skill dir owned by profile" 0 "install -d -m 700 -o vul -g vul $hh/skills $hh/skills/usine-hermes $hh/skills/usine-secret$" -- vc
+expect "preset: secret capture skill installed" 0 \
+  "install -m 644 -o vul -g vul $root/skills/usine-secret/SKILL\.md $hh/skills/usine-secret/SKILL\.md" -- vc
+expect "secret skill: hidden capture declared" 0 "name: USINE_PENDING_SECRET" -- cat "$root/skills/usine-secret/SKILL.md"
 expect "preset: Vulcain skill installed in its profile" 0 \
   "install -m 644 -o vul -g vul $root/skills/usine-hermes/SKILL\.md $hh/skills/usine-hermes/SKILL\.md" -- vc
 expect "preset: only the bridge is pre-approved" 0 \
@@ -260,6 +240,10 @@ expect "preset: drop-in relaxes NoNewPrivileges only" 0 \
   "write /etc/systemd/system/usine-vul\.service\.d/vulcain\.conf"$'\n'"\| \[Service\]"$'\n'"\| NoNewPrivileges=no$" -- vc
 expect "preset: still sandboxed by isolate.conf" 0 "write /etc/systemd/system/usine-vul\.service\.d/isolate\.conf" -- vc
 if vc 2>&1 | grep -cE >/dev/null "$prompts|systemctl (enable|start)"; then ko "preset: no prompt, not started"; else ok "preset: no prompt, not started"; fi
+if vc 2>&1 | grep -cE >/dev/null "model\.provider|_API_KEY"; then ko "preset: no provider yet (chosen in the chat)"; else ok "preset: no provider yet (chosen in the chat)"; fi
+expect "preset: registry has no provider" 0 "^\| provider=$" -- vc
+expect "preset: SOUL knows the operator language" 0 "^\| .*language: en" -- vc
+expect "preset: next step is the chat" 0 "sudo usine-hermes$" -- vc
 if crf 2>&1 | grep -cE >/dev/null "sudoers|command_allowlist|vulcain"; then ko "create: no operator bits without preset"; else ok "create: no operator bits without preset"; fi
 if [[ $EUID -ne 0 ]]; then
   expect "create: non-root refused" 1 "must run as root" -- \
@@ -268,7 +252,7 @@ fi
 
 # Lifecycle against a fake home_root; systemctl/journalctl stubbed on PATH.
 hr="$tmp/homes"; lcfg="$tmp/life.yaml"
-sed "s|^home_root:.*|home_root: $hr|" "$root/usine.example.yaml" >"$lcfg"
+sed "s|^home_root:.*|home_root: $hr|" "$ex" >"$lcfg"
 mkprof() { mkdir -p "$hr/$1/.hermes" "$tmp/profiles"; echo "provider=${4:-openrouter}" >"$tmp/profiles/$1"; printf 'DISCORD_BOT_TOKEN=%s\nOPENROUTER_API_KEY=%s\n' "$2" "$3" >"$hr/$1/.hermes/.env"; }
 mkprof alpha "" ""
 mkprof beta "tok.beta.1234567890" "sk-or-beta-secret"
@@ -365,6 +349,35 @@ if [[ $EUID -ne 0 ]]; then
   expect "secret: non-root refused" 1 "must run as root" -- lc secret delta DISCORD_BOT_TOKEN <<<x
 fi
 
+# model <name>: provider menu, login or hidden key, registry updated.
+md() { env USINE_LANG="${TL:-en}" STUB_INACTIVE="${STOPPED-}" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" model "$1" --dry-run <<<"$2"; }
+expect "model: menu asks for the model" 0 "Which model for delta\?" -- md delta ''
+mdf() { TL=fr md "$@"; }
+expect "model: French menu" 0 "1\) ChatGPT \(abonnement Codex\)" -- mdf delta ''
+expect "model: Enter = ChatGPT login as profile" 0 "^\+ runuser -u delta -- .*hermes auth add openai-codex$" -- md delta ''
+expect "model: provider set as profile" 0 "hermes config set model\.provider openai-codex" -- md delta ''
+expect "model: default model from config" 0 "hermes config set model\.default gpt-6-sol" -- md delta ''
+expect "model: registry updated" 0 "write $tmp/profiles/delta \(mode 644, owner root:root\)"$'\n'"\| provider=openai-codex$" -- md delta ''
+expect "model: restarts a running profile" 0 "systemctl restart usine-delta\.service" -- md delta ''
+if STOPPED=1 md delta '' 2>&1 | grep -c >/dev/null "systemctl restart"; then ko "model: stopped profile not restarted"; else ok "model: stopped profile not restarted"; fi
+expect "model: Claude subscription is a native login" 0 "hermes auth add anthropic$" -- md delta 2
+expect "model: Claude subscription warns Max + credits" 0 "Max plan" -- md delta 2
+i=0
+for p in openai-codex anthropic openrouter anthropic openai-api xai xai-oauth gemini deepseek; do
+  i=$((i + 1))
+  expect "model: choice $i is $p" 0 "^\| provider=$p$" -- md delta "$i"$'\nsk-model-secret'
+done
+expect "model: API key asked hidden" 0 "ANTHROPIC_API_KEY for delta \(hidden\):" -- md delta $'4\nsk-model-secret'
+expect "model: API key written to the profile .env" 0 "^# \.env keys: .*ANTHROPIC_API_KEY$" -- md delta $'4\nsk-model-secret'
+if md delta $'4\nsk-model-secret' 2>&1 | grep -cE >/dev/null "sk-model|auth add"; then ko "model: key never printed, no login"; else ok "model: key never printed, no login"; fi
+expect "model: empty key changes nothing" 1 "empty" -- md delta $'4\n'
+if md delta $'4\n' 2>&1 | grep -c >/dev/null "provider="; then ko "model: empty key, registry kept"; else ok "model: empty key, registry kept"; fi
+expect "model: bad choice refused" 2 "invalid choice" -- md delta 12
+expect "model: unmanaged profile refused" 1 "not a managed profile" -- md stranger ''
+if [[ $EUID -ne 0 ]]; then
+  expect "model: non-root refused" 1 "must run as root" -- env USINE_CONFIG="$lcfg" "$cli" model delta
+fi
+
 # bridge: the only root command of the Vulcain preset (via sudo). Validated
 # here without root; --dry-run prints the journal line and the systemd-run.
 mkprof vul "tok.vul.1234567890" "sk-or-vul-secret"
@@ -410,8 +423,69 @@ expect "bridge: max_profiles enforced" 1 "max_profiles" -- env USINE_CONFIG="$tm
 if [[ $EUID -ne 0 ]]; then
   expect "bridge: non-root refused" 1 "must run as root" -- env SUDO_USER=vul USINE_CONFIG="$lcfg" "$cli" bridge list
 fi
+# take-secret / allow / memory: validated by the bridge, run as root.
+expect "bridge: take-secret runs with the caller" 0 \
+  "systemd-run .* /usr/local/bin/usine-hermes take-secret vul delta OPENROUTER_API_KEY$" -- br take-secret delta OPENROUTER_API_KEY
+expect "bridge: take-secret for itself (its Discord bot)" 0 "usine-hermes take-secret vul vul DISCORD_BOT_TOKEN$" -- br take-secret vul DISCORD_BOT_TOKEN
+expect "bridge: take-secret only allowed keys" 2 "unknown key" -- br take-secret delta PATH
+expect "bridge: take-secret other provider key refused" 2 "unknown key" -- br take-secret delta XAI_API_KEY
+expect "bridge: take-secret needs a key" 2 "usage" -- br take-secret delta
+expect "bridge: take-secret extra args refused" 2 "usage" -- br take-secret delta DISCORD_BOT_TOKEN x
+expect "bridge: take-secret bad name" 2 "invalid name" -- br take-secret Bad DISCORD_BOT_TOKEN
+expect "bridge: take-secret unmanaged target" 1 "not a managed profile" -- br take-secret stranger DISCORD_BOT_TOKEN
+expect "bridge: allow ids" 0 "usine-hermes allow 123\\\\?,456$" -- br allow 123,456
+expect "bridge: allow rejects non-digits" 2 "invalid discord_allowed_users" -- br allow "1;2"
+expect "bridge: allow needs ids" 2 "usage" -- br allow
+expect "bridge: allow one argument" 2 "usage" -- br allow 1 2
+expect "bridge: memory runs with the caller" 0 "usine-hermes memory vul$" -- br memory
+expect "bridge: memory takes nothing" 2 "usage" -- br memory delta
+# take-secret: the value captured hidden by Vulcain's usine-secret skill.
+echo "USINE_PENDING_SECRET=sk-pending-secret" >>"$hr/vul/.hermes/.env"
+tss() { STOPPED=1 ts "$@"; }
+mkprof vtok "" ""; echo "USINE_PENDING_SECRET=MTIzNDU2Nzg5MDEyMzQ1Njc4.vtok.123456" >>"$hr/vtok/.hermes/.env"
+ts() { env USINE_LANG=en STUB_INACTIVE="${STOPPED-}" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" take-secret "$@" --dry-run; }
+expect "take-secret: written to the target .env" 0 \
+  "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY"$'\n'"\+ write $hr/delta/\.hermes/\.env \(mode 600, owner delta:delta\)" -- ts vul delta OPENROUTER_API_KEY
+expect "take-secret: removed from the caller .env" 0 \
+  "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY"$'\n'"\+ write $hr/vul/\.hermes/\.env " -- ts vul delta OPENROUTER_API_KEY
+if ts vul delta OPENROUTER_API_KEY 2>&1 | grep -c >/dev/null "sk-pending"; then ko "take-secret: value never printed"; else ok "take-secret: value never printed"; fi
+expect "take-secret: a Discord token starts a stopped profile" 0 "systemctl enable --now usine-alpha\.service" -- tss vtok alpha DISCORD_BOT_TOKEN
+if ts vtok alpha DISCORD_BOT_TOKEN 2>&1 | grep -cE >/dev/null "MTIzNDU2|vtok\.1"; then ko "take-secret: token never printed"; else ok "take-secret: token never printed"; fi
+expect "take-secret: invite link from the token's application id" 0 \
+  "https://discord\.com/oauth2/authorize\?client_id=123456789012345678&scope=bot\+applications\.commands&permissions=309237763136" -- ts vtok alpha DISCORD_BOT_TOKEN
+expect "take-secret: not a bot token refused" 1 "not a bot token" -- ts vul alpha DISCORD_BOT_TOKEN
+expect "take-secret: nothing captured" 1 "no pending secret" -- ts delta alpha DISCORD_BOT_TOKEN
+expect "take-secret: key checked" 2 "unknown key" -- ts vul delta PATH
+# allow: config + every profile's .env.
+expect "allow: config updated" 0 "^\| discord_allowed_users: 123,456$" -- lc allow 123,456 --dry-run
+expect "allow: every profile .env" 0 "write $hr/delta/\.hermes/\.env \(mode 600" -- lc allow 123,456 --dry-run
+expect "allow: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- lc allow 123,456 --dry-run
+expect "allow: bad ids refused" 2 "invalid discord_allowed_users" -- lc allow "1 2" --dry-run
+# memory: Honcho on with the captured OpenRouter key.
+mem() { lc memory "$1" --dry-run; }
+expect "memory: key stored root 600" 0 "write $tmp/openrouter\.key \(mode 600, owner root:root\)" -- mem vul
+expect "memory: config honcho true" 0 "^\| honcho: true$" -- mem vul
+expect "memory: Docker + Honcho up" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- mem vul
+expect "memory: every profile wired" 0 "write $hr/delta/\.hermes/honcho\.json" -- mem vul
+expect "memory: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- mem vul
+if mem vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "memory: key never printed"; else ok "memory: key never printed"; fi
+expect "memory: needs a captured key" 1 "OpenRouter key" -- mem delta
 if "$cli" help | grep -c >/dev/null bridge; then ko "bridge: hidden from help"; else ok "bridge: hidden from help"; fi
 expect "config reads max_profiles" 0 "^10$" -- env USINE_CONFIG="$root/usine.example.yaml" "$cli" config max_profiles
+
+# usine-hermes with no argument: the terminal chat with Vulcain.
+ch() { env USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" "$@"; }
+expect "chat: no Vulcain yet" 1 "not a managed profile" -- ch --dry-run
+mkprof vulcain "" "" openai-codex
+expect "chat: Hermes REPL as vulcain on a pty" 0 \
+  "^\+ runuser --pty -u vulcain -- env HOME=$hr/vulcain HERMES_HOME=$hr/vulcain/\.hermes .*hermes --cli$" -- ch --dry-run
+if ch --dry-run 2>&1 | grep -c >/dev/null "Which model"; then ko "chat: known provider, no menu"; else ok "chat: known provider, no menu"; fi
+echo "provider=" >"$tmp/profiles/vulcain"
+expect "chat: no provider yet: menu first" 0 "Which model for vulcain\?" -- ch --dry-run <<<''
+expect "chat: then the chat" 0 "hermes auth add openai-codex"$'\n'".*"$'\n'".*"$'\n'"\+ runuser --pty -u vulcain" -- ch --dry-run <<<''
+expect "chat: needs a terminal" 1 "ssh -t" -- ch
+expect "help mentions the chat" 0 "Vulcain" -- "$cli" help
+rm -f "$tmp/profiles/vulcain"
 
 # doctor: runuser/stat/git/curl stubbed; STUB_* vars inject failures.
 cat >"$tmp/stub/runuser" <<'EOF'
@@ -468,8 +542,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Honcho (on in the example config): Docker from the official repo + compose stack.
-nocfg="$tmp/nohoncho.yaml"
-sed "s|^honcho:.*|honcho: false|" "$root/usine.example.yaml" >"$nocfg"
+nocfg="$root/usine.example.yaml"
 bsn() { env USINE_CONFIG="$nocfg" "$cli" bootstrap --dry-run; }
 expect "bootstrap: Docker apt repo key" 0 "download\.docker\.com/linux/.*/gpg" -- bs
 expect "bootstrap: Docker official repo listed" 0 "write /etc/apt/sources\.list\.d/docker\.list" -- bs
@@ -479,7 +552,7 @@ expect "bootstrap: Honcho compose installed" 0 "/opt/usine-hermes/honcho/docker-
 expect "bootstrap: Honcho .env root 600" 0 \
   "write /opt/usine-hermes/honcho/\.env \(mode 600, owner root:root\)" -- bs
 if [[ -z $(bs 2>&1 >/dev/null) ]]; then ok "bootstrap: asks nothing (shared key)"; else ko "bootstrap: asks nothing (shared key)"; fi
-expect "bootstrap: Honcho key from the shared key file" 0 "# Honcho key: $root/openrouter\.key" -- bs
+expect "bootstrap: Honcho key from the shared key file" 0 "# Honcho key: $tmp/ex/openrouter\.key" -- bs
 expect "bootstrap: Honcho up -d" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- bs
 expect "bootstrap: waits for Honcho health" 0 "http://127\.0\.0\.1:8000/health" -- bs
 if bs 2>&1 | grep -cE >/dev/null "LLM_OPENAI_API_KEY=|POSTGRES_PASSWORD="; then ko "bootstrap: Honcho secrets not printed"; else ok "bootstrap: Honcho secrets not printed"; fi

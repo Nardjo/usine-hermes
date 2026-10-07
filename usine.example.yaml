@@ -1,6 +1,6 @@
 # usine-hermes machine config: /etc/usine-hermes/usine.yaml (written by `usine-hermes init`).
 # Flat `key: value` lines only. Never put secrets here. USINE_CONFIG overrides the path.
-# The shared OpenRouter key lives next to it, root-only: openrouter.key (mode 600).
+# The OpenRouter key (memory) lives next to it, root-only: openrouter.key (mode 600).
 
 # Language of the CLI prompts and messages: en or fr (asked first at install).
 lang: en
@@ -12,7 +12,6 @@ hermes_version: v2026.9.24
 # Default model per provider (key: model_<provider id with - as _>).
 model_openrouter: z-ai/glm-5.2
 model_anthropic: claude-sonnet-4-6
-model_claude_subscription_directsdk_experimental: sonnet
 model_openai_api: gpt-6-sol
 model_openai_codex: gpt-6-sol
 model_xai: grok-4.6
@@ -21,10 +20,11 @@ model_gemini: gemini-3.8-flash
 model_deepseek: deepseek-flash
 
 # Discord user ids allowed to talk to every agent, comma-separated.
-# Empty means nobody is allowed.
+# Empty means nobody is allowed. Set by Vulcain (bridge allow).
 discord_allowed_users:
-# Self-hosted Honcho memory (false skips Docker and Honcho in bootstrap).
-honcho: true
+# Self-hosted Honcho memory, turned on by Vulcain (bridge memory).
+# false skips Docker and Honcho in bootstrap.
+honcho: false
 # Your name as seen by Honcho in every profile's memory.
 peer_name: owner
 # Local Honcho API (bound to 127.0.0.1 only).
