@@ -66,10 +66,9 @@ if [[ ! -f /etc/usine-hermes/profiles/vulcain ]]; then
   [[ $yn == [nN]* ]] || "$cli" create vulcain --preset vulcain
 fi
 # One clear next step instead of a full doctor report (run `usine-hermes doctor` for that).
-if systemctl is-active --quiet usine-vulcain.service; then
-  t "✓ Installed. Vulcain is online: talk to it on Discord." "✓ Installé. Vulcain est en ligne : parle-lui sur Discord."
-elif [[ -f /etc/usine-hermes/profiles/vulcain ]]; then
-  t "✓ Installed. To start Vulcain: sudo usine-hermes secret vulcain" "✓ Installé. Pour démarrer Vulcain : sudo usine-hermes secret vulcain"
+# (create already said whether Vulcain is connected or how to start it.)
+if [[ -f /etc/usine-hermes/profiles/vulcain ]]; then
+  t "✓ Installed." "✓ Installé."
 else
   t "✓ Installed. Create your first agent: sudo usine-hermes create <name>" "✓ Installé. Crée ton premier agent : sudo usine-hermes create <nom>"
 fi

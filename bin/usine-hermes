@@ -468,6 +468,36 @@ secret() {
   printf -v "$1" '%s' "$v"
 }
 
+# ask_token <var> <prompt>: hidden, re-asked until empty (later) or shaped like
+# a bot token (three dot-separated parts), the usual paste mistake being the
+# 32-36 char Client Secret or the numeric Application ID.
+ask_token() {
+  local _tok # not "v": secret() has its own local v
+  while :; do
+    secret _tok "$2"
+    [[ -z $_tok || $_tok =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] && break
+    t "This is not a bot token (it has three parts separated by dots). Take it from the Bot tab > Reset Token, not the Client Secret or Application ID." \
+      "Ce n'est pas un token de bot (il a trois parties séparées par des points). Prends-le dans l'onglet Bot > Reset Token, pas le Client Secret ni l'Application ID." >&2
+  done
+  printf -v "$1" '%s' "$_tok"
+}
+
+# started <name>: start the unit, then wait for Hermes' "discord connected" line.
+started() {
+  local name=$1 unit since i
+  unit=$(unit_of "$name") since=$(date +%s)
+  run systemctl enable --now "$unit"
+  [[ $DRY_RUN == 0 ]] || return 0
+  for ((i = 0; i < 60; i++)); do
+    journalctl -u "$unit" --since "@$since" -o cat 2>/dev/null | grep -q '✓ discord connected' && return 0
+    systemctl is-active --quiet "$unit" || break
+    sleep 1
+  done
+  t "✗ $name is not connected to Discord. See: sudo usine-hermes logs $name" \
+    "✗ $name n'est pas connecté à Discord. Voir : sudo usine-hermes logs $name" >&2
+  return 1
+}
+
 # "d'alice", "de bob": French elision before a vowel.
 of() { if [[ $1 == [aeiouyh]* ]]; then printf "d'%s" "$1"; else printf 'de %s' "$1"; fi; }
 
@@ -546,7 +576,7 @@ cmd_create() {
   # Secrets first so a cancelled prompt leaves nothing half-created.
   if [[ $batch == 0 ]]; then
     [[ -z $key_name || -n $key ]] || secret key "$(t "$key_name for $name (hidden):" "$key_name pour $name (saisie masquée) :")"
-    secret token "$(t "Discord bot token for $label (Enter = later):" "Token du bot Discord $(of "$label") (Entrée = plus tard) :")"
+    ask_token token "$(t "Discord bot token for $label (Enter = later):" "Token du bot Discord $(of "$label") (Entrée = plus tard) :")"
     [[ -z $token ]] || check_token "$name" "$token"
   fi
 
@@ -604,7 +634,7 @@ cmd_create() {
   [[ -n $key_name && -z $key ]] &&
     t "Key to set: sudo usine-hermes secret $name $key_name" "Clé à saisir : sudo usine-hermes secret $name $key_name"
   if [[ -n $token ]]; then
-    run systemctl enable --now "$unit"
+    started "$name" || return 0
     if [[ -n $preset ]]; then t "✓ Vulcain is online: talk to it on Discord." "✓ Vulcain est en ligne : parle-lui sur Discord."
     else t "✓ $name created and started. Mention @$name on Discord." "✓ $name créée et démarrée. Mentionne @$name sur Discord."; fi
   else
@@ -620,7 +650,7 @@ cmd_start() {
   token=$(token_of "$name")
   [[ -n $token ]] || die "$(t "$name: DISCORD_BOT_TOKEN is empty in $(env_file "$name")" "$name : DISCORD_BOT_TOKEN est vide dans $(env_file "$name")")"
   check_token "$name" "$token"
-  run systemctl enable --now "$(unit_of "$name")"
+  started "$name"
 }
 
 # Mask secrets: values from the profile .env, then common token shapes.
@@ -655,7 +685,7 @@ cmd_secret() {
   need_root secret
   local env value old new
   env=$(env_file "$name") unit=$(unit_of "$name")
-  if [[ $# -eq 1 ]]; then secret value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
+  if [[ $# -eq 1 ]]; then ask_token value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
   else secret value "$(t "$key for $name (hidden):" "$key pour $name (saisie masquée) :")"; fi
   [[ -n $value ]] || die "$(t "empty value, $key unchanged" "valeur vide, $key inchangée")"
   [[ $key != DISCORD_BOT_TOKEN ]] || check_token "$name" "$value"
@@ -672,7 +702,7 @@ cmd_secret() {
   if systemctl is-active "$unit" >/dev/null 2>&1; then
     t "$name is running: apply with sudo usine-hermes restart $name" "$name tourne : applique avec sudo usine-hermes restart $name"
   elif [[ $# -eq 1 ]]; then
-    run systemctl enable --now "$unit"
+    started "$name" || exit 1
     t "✓ $name started. Mention @$name on Discord." "✓ $name démarrée. Mentionne @$name sur Discord."
   fi
 }

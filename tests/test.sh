@@ -204,6 +204,9 @@ expect "create: token given: says it runs" 0 "✓ alice créée et démarrée\. 
 if cs alice <<<$'w\ntok.alice.1234567890' 2>&1 | grep -cE >/dev/null "tok\.alice|sk-or-shared"; then ko "create: secrets never printed"; else ok "create: secrets never printed"; fi
 if cs alice <<<$'w\n' 2>&1 | grep -cE >/dev/null "systemctl (enable|start)"; then ko "create: no token: not started"; else ok "create: no token: not started"; fi
 expect "create: no token: one secret command (interactive)" 0 "^  sudo usine-hermes secret alice$" -- cs alice <<<$'w\n'
+# A pasted Client Secret (no dots) is refused and the token asked again.
+expect "create: non-token refused, re-asked" 0 "Ce n'est pas un token de bot" -- cs alice <<<$'w\nabcdefghijklmnopqrstuvwxyz0123456789\ntok.alice.1234567890'
+expect "create: valid token after retry starts" 0 "systemctl enable --now usine-alice\.service" -- cs alice <<<$'w\nabcdefghijklmnopqrstuvwxyz0123456789\ntok.alice.1234567890'
 if cs alice <<<$'w\n' 2>&1 | grep -c >/dev/null "secret alice OPENROUTER"; then ko "create: shared key, no key step"; else ok "create: shared key, no key step"; fi
 expect "create: no shared key: asks the OpenRouter key" 0 "OPENROUTER_API_KEY for ab \(hidden\):" -- cr ab <<<$'w\n'
 expect "create: --provider asks that key" 0 "ANTHROPIC_API_KEY pour ab \(saisie masquée\) :" -- cs ab --provider anthropic <<<$'w\n'
