@@ -630,8 +630,7 @@ cmd_create() {
     echo "  sudo usine-hermes"
   elif [[ -n $token ]]; then
     started "$name" || return 0
-    if [[ -n $preset ]]; then t "✓ Vulcain is online: talk to it on Discord." "✓ Vulcain est en ligne : parle-lui sur Discord."
-    else t "✓ $name created and started. Mention @$name on Discord." "✓ $name créée et démarrée. Mentionne @$name sur Discord."; fi
+    t "✓ $name created and started. Mention @$name on Discord." "✓ $name créée et démarrée. Mentionne @$name sur Discord."
   else
     t "✓ $name created. Once you have the bot token, it starts with:" "✓ $name créée. Quand tu as le token du bot, il démarre avec :"
     echo "  sudo usine-hermes secret $name"
