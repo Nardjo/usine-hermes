@@ -223,7 +223,10 @@ hh=/var/lib/usine-hermes/vul/.hermes
 expect "preset: unknown preset rejected" 2 "unknown preset" -- cr vul --preset nope --provider openrouter
 expect "preset: Vulcain SOUL installed" 0 "write $hh/SOUL\.md \(mode 644, owner vul:vul\)" -- vc
 expect "preset: SOUL never handles secrets" 0 "^\| .*[Nn]ever ask.*secret" -- vc
-expect "preset: skill dir owned by profile" 0 "install -d -m 700 -o vul -g vul $hh/skills $hh/skills/usine-hermes$" -- vc
+expect "preset: skill dir owned by profile" 0 "install -d -m 700 -o vul -g vul $hh/skills $hh/skills/usine-hermes $hh/skills/usine-secret$" -- vc
+expect "preset: secret capture skill installed" 0 \
+  "install -m 644 -o vul -g vul $root/skills/usine-secret/SKILL\.md $hh/skills/usine-secret/SKILL\.md" -- vc
+expect "secret skill: hidden capture declared" 0 "name: USINE_PENDING_SECRET" -- cat "$root/skills/usine-secret/SKILL.md"
 expect "preset: Vulcain skill installed in its profile" 0 \
   "install -m 644 -o vul -g vul $root/skills/usine-hermes/SKILL\.md $hh/skills/usine-hermes/SKILL\.md" -- vc
 expect "preset: only the bridge is pre-approved" 0 \
@@ -420,6 +423,51 @@ expect "bridge: max_profiles enforced" 1 "max_profiles" -- env USINE_CONFIG="$tm
 if [[ $EUID -ne 0 ]]; then
   expect "bridge: non-root refused" 1 "must run as root" -- env SUDO_USER=vul USINE_CONFIG="$lcfg" "$cli" bridge list
 fi
+# take-secret / allow / memory: validated by the bridge, run as root.
+expect "bridge: take-secret runs with the caller" 0 \
+  "systemd-run .* /usr/local/bin/usine-hermes take-secret vul delta OPENROUTER_API_KEY$" -- br take-secret delta OPENROUTER_API_KEY
+expect "bridge: take-secret for itself (its Discord bot)" 0 "usine-hermes take-secret vul vul DISCORD_BOT_TOKEN$" -- br take-secret vul DISCORD_BOT_TOKEN
+expect "bridge: take-secret only allowed keys" 2 "unknown key" -- br take-secret delta PATH
+expect "bridge: take-secret other provider key refused" 2 "unknown key" -- br take-secret delta XAI_API_KEY
+expect "bridge: take-secret needs a key" 2 "usage" -- br take-secret delta
+expect "bridge: take-secret extra args refused" 2 "usage" -- br take-secret delta DISCORD_BOT_TOKEN x
+expect "bridge: take-secret bad name" 2 "invalid name" -- br take-secret Bad DISCORD_BOT_TOKEN
+expect "bridge: take-secret unmanaged target" 1 "not a managed profile" -- br take-secret stranger DISCORD_BOT_TOKEN
+expect "bridge: allow ids" 0 "usine-hermes allow 123\\\\?,456$" -- br allow 123,456
+expect "bridge: allow rejects non-digits" 2 "invalid discord_allowed_users" -- br allow "1;2"
+expect "bridge: allow needs ids" 2 "usage" -- br allow
+expect "bridge: allow one argument" 2 "usage" -- br allow 1 2
+expect "bridge: memory runs with the caller" 0 "usine-hermes memory vul$" -- br memory
+expect "bridge: memory takes nothing" 2 "usage" -- br memory delta
+# take-secret: the value captured hidden by Vulcain's usine-secret skill.
+echo "USINE_PENDING_SECRET=sk-pending-secret" >>"$hr/vul/.hermes/.env"
+tss() { STOPPED=1 ts "$@"; }
+mkprof vtok "" ""; echo "USINE_PENDING_SECRET=new.vtok.123456" >>"$hr/vtok/.hermes/.env"
+ts() { env USINE_LANG=en STUB_INACTIVE="${STOPPED-}" USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" take-secret "$@" --dry-run; }
+expect "take-secret: written to the target .env" 0 \
+  "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY"$'\n'"\+ write $hr/delta/\.hermes/\.env \(mode 600, owner delta:delta\)" -- ts vul delta OPENROUTER_API_KEY
+expect "take-secret: removed from the caller .env" 0 \
+  "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY"$'\n'"\+ write $hr/vul/\.hermes/\.env " -- ts vul delta OPENROUTER_API_KEY
+if ts vul delta OPENROUTER_API_KEY 2>&1 | grep -c >/dev/null "sk-pending"; then ko "take-secret: value never printed"; else ok "take-secret: value never printed"; fi
+expect "take-secret: a Discord token starts a stopped profile" 0 "systemctl enable --now usine-alpha\.service" -- tss vtok alpha DISCORD_BOT_TOKEN
+if ts vtok alpha DISCORD_BOT_TOKEN 2>&1 | grep -c >/dev/null "new\.vtok"; then ko "take-secret: token never printed"; else ok "take-secret: token never printed"; fi
+expect "take-secret: not a bot token refused" 1 "not a bot token" -- ts vul alpha DISCORD_BOT_TOKEN
+expect "take-secret: nothing captured" 1 "no pending secret" -- ts delta alpha DISCORD_BOT_TOKEN
+expect "take-secret: key checked" 2 "unknown key" -- ts vul delta PATH
+# allow: config + every profile's .env.
+expect "allow: config updated" 0 "^\| discord_allowed_users: 123,456$" -- lc allow 123,456 --dry-run
+expect "allow: every profile .env" 0 "write $hr/delta/\.hermes/\.env \(mode 600" -- lc allow 123,456 --dry-run
+expect "allow: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- lc allow 123,456 --dry-run
+expect "allow: bad ids refused" 2 "invalid discord_allowed_users" -- lc allow "1 2" --dry-run
+# memory: Honcho on with the captured OpenRouter key.
+mem() { lc memory "$1" --dry-run; }
+expect "memory: key stored root 600" 0 "write $tmp/openrouter\.key \(mode 600, owner root:root\)" -- mem vul
+expect "memory: config honcho true" 0 "^\| honcho: true$" -- mem vul
+expect "memory: Docker + Honcho up" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- mem vul
+expect "memory: every profile wired" 0 "write $hr/delta/\.hermes/honcho\.json" -- mem vul
+expect "memory: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- mem vul
+if mem vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "memory: key never printed"; else ok "memory: key never printed"; fi
+expect "memory: needs a captured key" 1 "OpenRouter key" -- mem delta
 if "$cli" help | grep -c >/dev/null bridge; then ko "bridge: hidden from help"; else ok "bridge: hidden from help"; fi
 expect "config reads max_profiles" 0 "^10$" -- env USINE_CONFIG="$root/usine.example.yaml" "$cli" config max_profiles
 

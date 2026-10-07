@@ -339,7 +339,7 @@ cmd_bootstrap() {
 # Repo checkout first (tests, ./bin/usine-hermes), then the install.sh location.
 TEMPLATES=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates
 [[ -d $TEMPLATES ]] || TEMPLATES=/usr/local/share/usine-hermes/templates
-SKILL=$(dirname "$TEMPLATES")/skills/usine-hermes/SKILL.md
+SKILLS=$(dirname "$TEMPLATES")/skills
 # Installed CLI: the only command the Vulcain preset may run as root.
 BIN=/usr/local/bin/usine-hermes
 
@@ -456,6 +456,8 @@ secret() {
   printf -v "$1" '%s' "$v"
 }
 
+is_token() { [[ $1 =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]]; }
+
 # ask_token <var> <prompt>: hidden, re-asked until empty (later) or shaped like
 # a bot token (three dot-separated parts), the usual paste mistake being the
 # 32-36 char Client Secret or the numeric Application ID.
@@ -463,7 +465,7 @@ ask_token() {
   local _tok # not "v": secret() has its own local v
   while :; do
     secret _tok "$2"
-    [[ -z $_tok || $_tok =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] && break
+    [[ -z $_tok ]] || is_token "$_tok" && break
     t "This is not a bot token (it has three parts separated by dots). Take it from the Bot tab > Reset Token, not the Client Secret or Application ID." \
       "Ce n'est pas un token de bot (il a trois parties séparées par des points). Prends-le dans l'onglet Bot > Reset Token, pas le Client Secret ni l'Application ID." >&2
   done
@@ -504,14 +506,29 @@ check_token() {
 install_vulcain() {
   local name=$1 hermes_home sudoers=/etc/sudoers.d/usine-hermes-$1
   hermes_home=$(home_of "$name")/.hermes
-  run install -d -m 700 -o "$name" -g "$name" "$hermes_home/skills" "$hermes_home/skills/usine-hermes"
-  run install -m 644 -o "$name" -g "$name" "$SKILL" "$hermes_home/skills/usine-hermes/SKILL.md"
+  # usine-secret apart: viewing it is what makes Hermes ask a secret hidden.
+  run install -d -m 700 -o "$name" -g "$name" "$hermes_home/skills" \
+    "$hermes_home/skills/usine-hermes" "$hermes_home/skills/usine-secret"
+  run install -m 644 -o "$name" -g "$name" "$SKILLS/usine-hermes/SKILL.md" "$hermes_home/skills/usine-hermes/SKILL.md"
+  run install -m 644 -o "$name" -g "$name" "$SKILLS/usine-secret/SKILL.md" "$hermes_home/skills/usine-secret/SKILL.md"
   as_profile "$name" hermes config set command_allowlist "[\"sudo -n $BIN bridge *\"]"
   # sudo ignores sudoers.d names with a dot: stage, check, then publish.
   echo "$name ALL=(root) NOPASSWD: $BIN bridge *" | write_file 440 root:root "$sudoers.new"
   run visudo -cf "$sudoers.new"
   run mv "$sudoers.new" "$sudoers"
   render "$name" vulcain.conf | write_file 644 root:root "/etc/systemd/system/$(unit_of "$name").d/vulcain.conf"
+}
+
+# Honcho memory for one profile: its workspace (get-or-create, safe to
+# repeat), honcho.json and the memory provider.
+wire_honcho() {
+  local name=$1 url
+  url=$(cfg honcho_url)
+  run curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
+    -d "{\"id\":\"$name\"}" "$url/v3/workspaces"
+  printf '{\n  "baseUrl": "%s",\n  "hosts": {\n    "hermes": {\n      "enabled": true,\n      "workspace": "%s",\n      "aiPeer": "%s",\n      "peerName": "%s"\n    }\n  }\n}\n' \
+    "$url" "$name" "$name" "$(cfg peer_name)" | write_file 600 "$name:$name" "$(home_of "$name")/.hermes/honcho.json"
+  as_profile "$name" hermes config set memory.provider honcho
 }
 
 cmd_create() {
@@ -585,16 +602,7 @@ cmd_create() {
     as_profile "$name" hermes config set model.provider "$provider"
     as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
   fi
-  if [[ $(cfg honcho) == true ]]; then
-    local url
-    url=$(cfg honcho_url)
-    # Get-or-create: safe to repeat.
-    run curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
-      -d "{\"id\":\"$name\"}" "$url/v3/workspaces"
-    printf '{\n  "baseUrl": "%s",\n  "hosts": {\n    "hermes": {\n      "enabled": true,\n      "workspace": "%s",\n      "aiPeer": "%s",\n      "peerName": "%s"\n    }\n  }\n}\n' \
-      "$url" "$name" "$name" "$(cfg peer_name)" | write_file 600 "$name:$name" "$hermes_home/honcho.json"
-    as_profile "$name" hermes config set memory.provider honcho
-  fi
+  [[ $(cfg honcho) != true ]] || wire_honcho "$name"
 
   # printf is a builtin: secrets never reach a process argv. No key line for
   # subscriptions.
@@ -691,28 +699,104 @@ env_set() {
   printf '%s\n' "$new" | write_file 600 "$1:$1" "$(env_file "$1")" secret
 }
 
-# secret <name> [KEY]: no KEY is the Discord token, then a stopped profile starts.
-cmd_secret() {
-  local name=$1 key=${2:-DISCORD_BOT_TOKEN} unit
-  need_managed "$name"
-  grep -qxF -- "$key" <(secret_keys "$name") ||
-    die "$(t "unknown key: '$key' (allowed: $(secret_keys "$name" | paste -sd' ' -))" \
-      "clé inconnue : '$key' (autorisées : $(secret_keys "$name" | paste -sd' ' -))")" 2
-  need_root secret
-  local value
+allowed_key() {
+  grep -qxF -- "$2" <(secret_keys "$1") ||
+    die "$(t "unknown key: '$2' (allowed: $(secret_keys "$1" | paste -sd' ' -))" \
+      "clé inconnue : '$2' (autorisées : $(secret_keys "$1" | paste -sd' ' -))")" 2
+}
+
+# store_secret <name> <KEY> <value>: write it; a Discord token starts a
+# stopped profile.
+store_secret() {
+  local name=$1 key=$2 value=$3 unit
   unit=$(unit_of "$name")
-  if [[ $# -eq 1 ]]; then ask_token value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
-  else secret value "$(t "$key for $name (hidden):" "$key pour $name (saisie masquée) :")"; fi
   [[ -n $value ]] || die "$(t "empty value, $key unchanged" "valeur vide, $key inchangée")"
-  [[ $key != DISCORD_BOT_TOKEN ]] || check_token "$name" "$value"
+  if [[ $key == DISCORD_BOT_TOKEN ]]; then
+    is_token "$value" || die "$(t "not a bot token (three parts separated by dots): Bot tab > Reset Token" \
+      "pas un token de bot (trois parties séparées par des points) : onglet Bot > Reset Token")"
+    check_token "$name" "$value"
+  fi
   env_set "$name" "$key" "$value"
   t "$key set for $name" "$key enregistrée pour $name"
   if systemctl is-active "$unit" >/dev/null 2>&1; then
     t "$name is running: apply with sudo usine-hermes restart $name" "$name tourne : applique avec sudo usine-hermes restart $name"
-  elif [[ $# -eq 1 ]]; then
+  elif [[ $key == DISCORD_BOT_TOKEN ]]; then
     started "$name" || exit 1
     t "✓ $name started. Mention @$name on Discord." "✓ $name démarrée. Mentionne @$name sur Discord."
   fi
+}
+
+# secret <name> [KEY]: no KEY is the Discord token, then a stopped profile starts.
+cmd_secret() {
+  local name=$1 key=${2:-DISCORD_BOT_TOKEN} value
+  need_managed "$name"
+  allowed_key "$name" "$key"
+  need_root secret
+  if [[ $# -eq 1 ]]; then ask_token value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
+  else secret value "$(t "$key for $name (hidden):" "$key pour $name (saisie masquée) :")"; fi
+  store_secret "$name" "$key" "$value"
+}
+
+# pending <from>: the secret <from> captured hidden with its usine-secret skill.
+pending() { env_get <(env_read "$1") USINE_PENDING_SECRET; }
+
+# take-secret <from> <name> <KEY>: move <from>'s pending secret into <name>'s .env.
+cmd_take_secret() {
+  local from=$1 name=$2 key=$3 value
+  need_root take-secret
+  need_managed "$from"
+  need_managed "$name"
+  allowed_key "$name" "$key"
+  value=$(pending "$from")
+  [[ -n $value ]] || die "$(t "no pending secret in $from: view the usine-secret skill first" \
+    "aucun secret en attente chez $from : ouvre d'abord le skill usine-secret")"
+  # Gone from the caller whatever comes next: a bad paste is simply asked again.
+  env_set "$from" USINE_PENDING_SECRET
+  store_secret "$name" "$key" "$value"
+}
+
+# cfg_set <key> <value>: rewrite one line of the config.
+cfg_set() {
+  local new
+  new=$(awk -v k="$1" -v v="$2" 'index($0, k ":") == 1 { $0 = k ": " v } 1' "$CONFIG")
+  printf '%s\n' "$new" | write_file 644 root:root "$CONFIG"
+}
+
+# allow <ids>: who may talk to every bot, in the config and every .env.
+cmd_allow() {
+  local ids=$1 p
+  need_root allow
+  check_value discord_allowed_users "$ids"
+  [[ -n $ids ]] || die "$(t "allow: give at least one Discord id" "allow : donne au moins un ID Discord")" 2
+  cfg_set discord_allowed_users "$ids"
+  for p in $(profiles); do
+    env_set "$p" DISCORD_ALLOWED_USERS "$ids"
+    run systemctl try-restart "$(unit_of "$p")"
+  done
+}
+
+# memory <from>: Honcho on, with the OpenRouter key <from> captured (or the
+# stored one), wired into every profile.
+cmd_memory() {
+  local from=$1 key p
+  need_root memory
+  need_managed "$from"
+  key=$(pending "$from")
+  if [[ -n $key ]]; then
+    # printf is a builtin: the key never reaches a process argv.
+    printf '%s\n' "$key" | write_file 600 root:root "$KEY_FILE" secret
+    env_set "$from" USINE_PENDING_SECRET
+  fi
+  [[ -n $key || -r $KEY_FILE ]] || die "$(t "memory needs an OpenRouter key: capture it with the usine-secret skill first" \
+    "la mémoire a besoin d'une clé OpenRouter : capture-la d'abord avec le skill usine-secret")"
+  cfg_set honcho true
+  bootstrap_docker
+  bootstrap_honcho
+  for p in $(profiles); do
+    wire_honcho "$p"
+    run systemctl try-restart "$(unit_of "$p")"
+  done
+  t "✓ Memory on for every profile." "✓ Mémoire activée pour chaque profil."
 }
 
 # model <name>: pick a provider, log in or give its key, then restart if running.
@@ -828,7 +912,7 @@ cmd_bridge() {
   check_name "$caller"
   need_managed "$caller"
   shift || true
-  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P]"
+  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P] | take-secret <name> <KEY> | allow <ids> | memory"
   case $action in
     list) [[ $# -eq 0 ]] || die "$usage" 2 ;;
     doctor)
@@ -862,9 +946,21 @@ cmd_bridge() {
       done
       [[ -n ${seen[--mission]:-} ]] || die "$usage" 2
       ;;
+    take-secret)
+      check_name "$target"
+      [[ $# -eq 2 ]] || die "$usage" 2
+      need_managed "$target"
+      allowed_key "$target" "$2"
+      ;;
+    allow)
+      [[ $# -eq 1 && -n $target ]] || die "$usage" 2
+      check_value discord_allowed_users "$target"
+      ;;
+    memory) [[ $# -eq 0 ]] || die "$usage" 2 ;;
     *) die "bridge: '$action' not allowed ($usage)" 2 ;;
   esac
-  [[ $target != "$caller" || $action == status || $action == logs ]] ||
+  # Its own Discord token is the one secret Vulcain sets on itself.
+  [[ $target != "$caller" || $action == status || $action == logs || $action == take-secret ]] ||
     die "bridge: $action on its own profile is not allowed" 2
   if [[ $action == create ]]; then
     local max
@@ -874,6 +970,8 @@ cmd_bridge() {
   fi
   need_root bridge
   run logger -t usine-hermes-bridge "caller=$caller action=$action target=${target:--}"
+  # These read the secret the caller captured: the root side needs its name.
+  [[ $action != take-secret && $action != memory ]] || set -- "$caller" "$@"
   run systemd-run --wait --pipe --quiet --collect "$BIN" "$action" "$@" </dev/null
 }
 
@@ -941,7 +1039,9 @@ main() {
     help | -h | --help) usage ;;
     chat) check_config; cmd_chat ;;
     create | start | stop | restart | status | logs | destroy | secret | model) check_name "${1:-}" ;;&
-    create | start | stop | restart | status | logs | destroy | secret | model | list | config | bootstrap | doctor | bridge)
+    take-secret) check_name "${1:-}"; check_name "${2:-}" ;;&
+    memory) check_name "${1:-}" ;;&
+    create | start | stop | restart | status | logs | destroy | secret | model | take-secret | memory | allow | list | config | bootstrap | doctor | bridge)
       check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
@@ -953,6 +1053,9 @@ main() {
     status) cmd_status "$1" ;;
     secret) cmd_secret "$@" ;;
     model) cmd_model "$1" ;;
+    take-secret) cmd_take_secret "$1" "$2" "${3:-}" ;;
+    allow) cmd_allow "${1:-}" ;;
+    memory) cmd_memory "$1" ;;
     logs) cmd_logs "$@" ;;
     list) cmd_list ;;
     init) cmd_init ;;

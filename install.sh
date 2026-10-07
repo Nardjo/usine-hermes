@@ -49,26 +49,17 @@ shopt -s nullglob
 for f in "$src"/templates/*; do
   install -m 644 "$f" "$share_dir/templates/"
 done
-install -D -m 644 "$src/skills/usine-hermes/SKILL.md" "$share_dir/skills/usine-hermes/SKILL.md"
+for f in "$src"/skills/*/SKILL.md; do
+  install -D -m 644 "$f" "$share_dir/skills/$(basename "$(dirname "$f")")/SKILL.md"
+done
 [[ -f $src/usine.example.yaml ]] && install -m 644 "$src/usine.example.yaml" "$share_dir/"
 
 t "Installed $bin_dir/usine-hermes and $share_dir." "Installé : $bin_dir/usine-hermes et $share_dir."
 
-# First setup, re-runnable: init and Vulcain ask only what is not known yet.
+# First setup, re-runnable: each step asks only what is not known yet.
 cli=$bin_dir/usine-hermes
 "$cli" init
-# init may just have asked the language.
-lang=${USINE_LANG:-$("$cli" config lang)}
 "$cli" bootstrap
-if [[ ! -f /etc/usine-hermes/profiles/vulcain ]]; then
-  read -r -p "$(t "Install Vulcain, the agent that creates the other agents from Discord? [Y/n]" \
-    "Installer Vulcain, l'agent qui crée les autres agents depuis Discord ? [O/n]") " yn || yn=n
-  [[ $yn == [nN]* ]] || "$cli" create vulcain --preset vulcain
-fi
-# One clear next step instead of a full doctor report (run `usine-hermes doctor` for that).
-# (create already said whether Vulcain is connected or how to start it.)
-if [[ -f /etc/usine-hermes/profiles/vulcain ]]; then
-  t "✓ Installed." "✓ Installé."
-else
-  t "✓ Installed. Create your first agent: sudo usine-hermes create <name>" "✓ Installé. Crée ton premier agent : sudo usine-hermes create <nom>"
-fi
+[[ -f /etc/usine-hermes/profiles/vulcain ]] || "$cli" create vulcain --preset vulcain
+# The chat with Vulcain (it asks its model first); it sets up the rest.
+exec "$cli"
