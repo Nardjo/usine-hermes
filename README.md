@@ -7,6 +7,7 @@ Turn a fresh VPS into a factory of isolated [Hermes Agent](https://github.com/No
 ```
 /usr/local/bin/usine-hermes          the CLI (+ templates and skill in /usr/local/share/usine-hermes)
 /etc/usine-hermes/usine.yaml         machine config (no secrets)
+/etc/usine-hermes/openrouter.key     shared OpenRouter key (root, 600): Honcho + default profile key
 /etc/usine-hermes/profiles/<name>    root-owned ownership marker of each managed profile (holds its provider)
 /usr/local/lib/hermes-agent          Hermes, pinned, shared, root-owned, read-only for profiles
 /opt/usine-hermes/honcho             Honcho memory (docker compose), API on 127.0.0.1:8000 only
@@ -31,42 +32,41 @@ Each profile is the default profile of its own Hermes home, so there is no profi
 - Root (or sudo).
 - Disk: about 2 GB for the shared Hermes install, plus a few GB for the Honcho images and database.
 - RAM: Honcho runs Postgres, Redis, an API and a deriver; plan for at least 2 GB total, more with many agents.
-- An OpenRouter API key for Honcho (unless `honcho: false`), and per profile a Discord bot token plus a model credential.
+- An OpenRouter API key (Honcho memory and the agents' default model; without one, no memory and each agent asks for its own key), and per profile a Discord bot token.
 
 ## Install
 
-```sh
+One command, three questions:
+
+```
 curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
+Ton ID Discord (Discord > Mode développeur > clic droit sur toi > Copier l'identifiant) :
+Clé OpenRouter (mémoire + agents, saisie masquée, Entrée = sans mémoire) :
+Installer Vulcain, l'agent qui crée les autres agents depuis Discord ? [O/n]
+Token du bot Discord de Vulcain (Entrée = plus tard) :
+✓ Vulcain est en ligne : parle-lui sur Discord.
 ```
 
-Or from a clone (same result):
+Or from a clone (same result): `git clone https://github.com/Nardjo/usine-hermes && cd usine-hermes && sudo ./install.sh`.
 
-```sh
-git clone https://github.com/Nardjo/usine-hermes && cd usine-hermes && sudo ./install.sh
-```
-
-Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it. It copies the CLI and templates, then offers to run `init` (writes the config) and `bootstrap` (installs Hermes, Docker and Honcho). Enter means yes. Both can be re-run safely; `bootstrap` skips the Hermes installer when the pinned commit is already there, and keeps the Honcho database password and OpenRouter key.
+Piped, `install.sh` downloads the repo (branch `main`, or `bash -s -- --ref <branch|tag>`) and runs itself from it with the terminal as input. It copies the CLI and templates, then chains `init` (the Discord id and the shared OpenRouter key), `bootstrap` (Hermes, Docker, Honcho), the optional Vulcain, and a `doctor` summary. Everything else has a default (home root, Hermes version, provider `openrouter`, memory on when a key is given, peer name `owner`). Re-running it asks nothing already known: the config, the stored key and an existing Vulcain are kept, and `bootstrap` skips the Hermes installer when the pinned commit is already there.
 
 ## Quickstart
 
-```sh
-sudo usine-hermes create alice      # asks provider, personality, mission, key, Discord token
-sudo usine-hermes start alice       # enable + start (refuses an empty or reused token)
-sudo usine-hermes logs alice        # redacted journal
-sudo usine-hermes doctor            # checks everything, including isolation
 ```
+sudo usine-hermes create alice
+Que doit faire alice ? (une phrase) :
+Token du bot Discord d'alice (Entrée = plus tard) :
+✓ alice créée et démarrée. Mentionne @alice sur Discord.
+```
+
+No token yet? `create` prints the one command to run later: `sudo usine-hermes secret alice` asks the token and starts the bot. Then `sudo usine-hermes logs alice` (redacted journal) and `sudo usine-hermes doctor` (everything, including isolation).
 
 ## Vulcain: an operator bot that creates bots (optional)
 
-No profile ships by default. If you want one Discord bot that creates the others and keeps the farm running, create it with the `vulcain` preset (the name is yours):
+Offered at install (default yes). To add it later: `sudo usine-hermes create vulcain --preset vulcain`.
 
-```sh
-sudo usine-hermes create vulcain --preset vulcain --provider openrouter
-sudo usine-hermes secret vulcain DISCORD_BOT_TOKEN    # and its provider key, if any
-sudo usine-hermes start vulcain
-```
-
-On top of a normal profile it gets a Vulcain `SOUL.md`, its own Hermes skill ([skills/usine-hermes/SKILL.md](skills/usine-hermes/SKILL.md), installed in `<home>/.hermes/skills/usine-hermes/`), one sudoers rule (`/etc/sudoers.d/usine-hermes-<name>`), and a drop-in `vulcain.conf`. On Discord it asks you for the name, personality, mission and provider, confirms them, runs `create`, walks you through the Discord bot, then gives you the exact `secret` and `start` commands. A bot it creates stays stopped until you type its secrets yourself: that is the human approval.
+On top of a normal profile it gets a Vulcain `SOUL.md`, its own Hermes skill ([skills/usine-hermes/SKILL.md](skills/usine-hermes/SKILL.md), installed in `<home>/.hermes/skills/usine-hermes/`), one sudoers rule (`/etc/sudoers.d/usine-hermes-<name>`), and a drop-in `vulcain.conf`. On Discord it asks you the new agent's name and what it does, confirms them, runs `create`, walks you through the Discord bot, then gives you one command: `sudo usine-hermes secret <name>`. The bot starts by itself once you type its token: that is the human approval.
 
 What it can run, through `sudo -n /usr/local/bin/usine-hermes bridge <action>` only:
 
@@ -78,15 +78,15 @@ How it works: the bridge is a hidden subcommand of the root-owned CLI. It re-val
 
 ## Commands
 
-`--dry-run` is accepted anywhere: commands are printed instead of run, no root needed, no secret prompts.
+`--dry-run` is accepted anywhere: commands are printed instead of run, no root needed. Prompts are the same; secret values are never printed.
 
 | Command | What it does |
 |---|---|
-| `init` | Asks a few questions, writes `/etc/usine-hermes/usine.yaml` (asks before overwriting; with `--dry-run` only prints it). `USINE_CONFIG` overrides the path; the profile registry lives in a `profiles/` directory next to it. |
+| `init` | Asks your Discord id and the OpenRouter key (hidden; Enter = no memory), writes `/etc/usine-hermes/usine.yaml` and the shared key `/etc/usine-hermes/openrouter.key` (mode `600`). Does nothing if the config exists. `USINE_CONFIG` overrides the path; the key and the profile registry (`profiles/`) live next to it. |
 | `config <key>` | Prints one config value. |
-| `bootstrap` | Installs prerequisites, Hermes at the pinned tag, pre-installs the Discord and Honcho deps into the shared venv, then (if `honcho: true`) Docker from Docker's apt repo and the Honcho stack. Waits up to 180 s for Honcho health. Asks once (hidden) for the OpenRouter key. |
-| `create <name> [--personality T] [--mission T] [--provider P] [--preset vulcain]` | Creates the Linux user, home, `SOUL.md`, model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in. Does not start. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user. A name that is already managed (including a half-created profile) is refused with a pointer to `destroy`. Secrets prompts are hidden; Enter leaves them empty. With all three flags and stdin not a terminal (a script or a coding agent), it never prompts: secrets stay empty, subscription login is skipped, and it prints the exact `secret` commands to run next. `--preset vulcain` makes the operator profile (section above). |
-| `secret <name> <KEY>` | Asks (hidden) for one value and writes or replaces `KEY` in the profile's `.env` (mode `600`, owned by the profile). Never prints it. `KEY` is `DISCORD_BOT_TOKEN` or the key variable of the profile's own provider (table below; none for subscriptions); managed profiles only; an empty value changes nothing. Says to `restart` if the profile is running. |
+| `bootstrap` | Installs prerequisites, Hermes at the pinned tag, pre-installs the Discord and Honcho deps into the shared venv, then (if `honcho: true`) Docker from Docker's apt repo and the Honcho stack, using the shared OpenRouter key. Waits up to 180 s for Honcho health. Asks nothing. |
+| `create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]` | Asks what the agent does (unless `--mission`) and its Discord bot token (hidden; Enter = later). Creates the Linux user, home, `SOUL.md` (default personality unless `--personality`), model config, Honcho workspace and `honcho.json`, `.env`, unit and drop-in, then starts it if a token was given; otherwise prints the one `secret` command. Provider `openrouter` by default, with the shared key copied into the profile's `.env` (`600`); `--provider P` asks that provider's key or offers its subscription login (no shared key: `openrouter` asks a key too). A reused token is refused before anything is created. Name must match `^[a-z][a-z0-9-]{1,30}$` and must not be an existing non-managed user; an already managed name (including a half-created profile) is refused with a pointer to `destroy`. With `--mission` and stdin not a terminal (a script, a coding agent, Vulcain), it never prompts: the token stays empty, subscription login is skipped, and it prints the commands to run next. `--preset vulcain` makes the operator profile (section above). |
+| `secret <name> [KEY]` | Without `KEY`: asks (hidden) the Discord bot token, then starts the profile if it is stopped (refuses a token used by another profile). With `KEY`: asks one value and writes or replaces it. Values go to the profile's `.env` (mode `600`, owned by the profile) and are never printed. `KEY` is `DISCORD_BOT_TOKEN` or the key variable of the profile's own provider (table below; none for subscriptions); managed profiles only; an empty value changes nothing. Says to `restart` if the profile is running. |
 | `start <name>` | `systemctl enable --now`. Refuses if `DISCORD_BOT_TOKEN` is empty or used by another profile. |
 | `stop <name>` / `restart <name>` | systemctl stop / restart. |
 | `status <name>` | Redacted `systemctl status` plus `token=set|empty|unknown`. |
@@ -103,15 +103,17 @@ How it works: the bridge is a hidden subcommand of the root-owned CLI. It re-val
 4. Note the **Application ID** (General Information), then open this URL to invite the bot to your server:
    `https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=309237763136`
    (scopes `bot applications.commands`, permissions `309237763136`).
-5. Get your own user id for the allowlist: Discord **Settings > Advanced > Developer Mode** on, then right-click your name > **Copy User ID**. Put it in `discord_allowed_users` (at `init`, or edit the config; affects profiles created afterwards).
-6. Paste the token when `create` asks for `DISCORD_BOT_TOKEN`, or later run `sudo usine-hermes secret <name> DISCORD_BOT_TOKEN`.
-7. `sudo usine-hermes start <name>`. Mention the bot in a channel; it only answers allowlisted users and only when mentioned (`DISCORD_REQUIRE_MENTION=true`).
+5. Your own user id (asked at install): Discord **Settings > Advanced > Developer Mode** on, then right-click your name > **Copy User ID**. It lands in `discord_allowed_users` (edit the config to add more; affects profiles created afterwards).
+6. Paste the token when `create` asks for it, or later run `sudo usine-hermes secret <name>`: the bot starts by itself.
+7. Mention the bot in a channel; it only answers allowlisted users and only when mentioned (`DISCORD_REQUIRE_MENTION=true`).
 
-Never reuse a token across profiles: two gateways on one bot fight each other (`start` refuses it).
+Never reuse a token across profiles: two gateways on one bot fight each other (`create`, `secret` and `start` refuse it).
 
 ## Providers
 
-| Menu id | Auth | Default model | Limits |
+`openrouter` is the default and uses the shared key. Other providers only with `create --provider <id>`:
+
+| Id | Auth | Default model | Limits |
 |---|---|---|---|
 | `openrouter` | `OPENROUTER_API_KEY` | `z-ai/glm-5.2` | |
 | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` | |
@@ -127,16 +129,15 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 
 ## Config reference
 
-`/etc/usine-hermes/usine.yaml`, flat `key: value`, no secrets. See [usine.example.yaml](usine.example.yaml). `init` and every command validate `home_root` (absolute, not `/`, no `..`, only `A-Za-z0-9/._-`), `hermes_version` (`vX.Y.Z`), `peer_name`, `honcho_url` and `discord_allowed_users`, and refuse to run on a bad value.
+`/etc/usine-hermes/usine.yaml`, flat `key: value`, no secrets, written once by `init` with defaults (edit it by hand to change one). See [usine.example.yaml](usine.example.yaml). Every command validates `home_root` (absolute, not `/`, no `..`, only `A-Za-z0-9/._-`), `hermes_version` (`vX.Y.Z`), `peer_name`, `honcho_url` and `discord_allowed_users`, and refuses to run on a bad value.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `home_root` | `/var/lib/usine-hermes` | Parent of every profile home. |
 | `hermes_version` | `v2026.9.24` | Hermes tag, resolved to its commit and installed once. |
-| `default_provider` | `openrouter` | Preselected in the `create` menu. |
 | `model_<provider>` | see table above | Default model per provider (`-` in the id becomes `_`). |
 | `discord_allowed_users` | empty | Comma-separated Discord user ids. Empty: nobody is allowed. Copied into each profile's `.env` at `create`. |
-| `honcho` | `true` | `false` skips Docker, Honcho and memory config. |
+| `honcho` | `true` (`false` if no key at install) | `false` skips Docker, Honcho and memory config. |
 | `peer_name` | `owner` | Your name as a peer in Honcho. |
 | `honcho_url` | `http://127.0.0.1:8000` | Honcho API used by bootstrap and profiles. |
 | `max_profiles` | `10` | Most managed profiles (operator included) a Vulcain operator may reach with `create`. Read only by the bridge. |
@@ -145,6 +146,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 
 - File isolation: each profile is its own Linux user with a `700` home and a `600` `.env`; the systemd sandbox hides other homes and processes. `doctor` proves cross-profile reads fail.
 - Secrets are prompted hidden, written with umask 077, never passed on a visible command line, and redacted in `logs`/`status`. The config file holds none.
+- One shared OpenRouter key by default: root-only in `/etc/usine-hermes/openrouter.key`, used by Honcho and copied into each default profile's `.env`. A profile can therefore spend on the shared account; give one its own key with `secret <name> OPENROUTER_API_KEY`. Rotating the shared key means updating that file, Honcho's `.env` and each profile.
 - Honcho has no auth: it listens on 127.0.0.1 only, but any local process, including any profile, can query any workspace. File isolation holds; **memory isolation between profiles does not**.
 - Pre-installing the Discord and Honcho deps into the shared venv is inferred from upstream's Docker image, not documented for script installs. Each profile also gets its own lazy-install directory as a fallback.
 - No upgrades in V1: changing `hermes_version` and re-running `bootstrap` is untested; do not run `hermes update` (it leaves the pin). No backups.
@@ -159,7 +161,7 @@ API keys are prompted hidden and written to the profile's `.env`. Subscription l
 bash tests/test.sh
 ```
 
-Dependency-free, no root, no VPS: covers name validation, `init`, `install.sh` OS/root refusal, `--dry-run` of `bootstrap` and `create`, `secret`, the profile lifecycle, `doctor` and the Vulcain bridge against stubbed system commands, and `shellcheck` on every shell file. On macOS use a bash 5 (`/opt/homebrew/bin/bash tests/test.sh`). What needs a real VPS is in [docs/vps-validation.md](docs/vps-validation.md).
+Dependency-free, no root, no VPS: covers name validation, the questions `init`, `create` and `secret` ask (and do not ask), `install.sh` OS/root refusal, `--dry-run` of `bootstrap` and `create`, `secret`, the profile lifecycle, `doctor` and the Vulcain bridge against stubbed system commands, and `shellcheck` on every shell file. On macOS use a bash 5 (`/opt/homebrew/bin/bash tests/test.sh`). What needs a real VPS is in [docs/vps-validation.md](docs/vps-validation.md).
 
 ## License
 

@@ -249,7 +249,7 @@ bootstrap_honcho() {
   pw=$(env_get "$honcho_env" POSTGRES_PASSWORD)
   # Hex: safe inside the connection URI without encoding.
   [[ -n $pw ]] || pw=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
-  [[ ! -f $KEY_FILE ]] || key=$(<"$KEY_FILE")
+  [[ ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
   [[ $DRY_RUN == 0 ]] || echo "# Honcho key: $KEY_FILE"
   [[ -n $key || $DRY_RUN == 1 ]] || die "Honcho needs the OpenRouter key in $KEY_FILE (or set honcho: false)"
 
@@ -481,7 +481,7 @@ cmd_create() {
   personality=${personality:-helpful, concise and friendly}
   mission=${mission:-help the operator with day-to-day tasks}
   # The shared key (stored at init) is the default OpenRouter key.
-  [[ $provider != openrouter || ! -f $KEY_FILE ]] || key=$(<"$KEY_FILE")
+  [[ $provider != openrouter || ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
   if [[ -z $key_name ]]; then
     sub_warning "$provider" >&2
     echo "The login runs as Linux user $name; its tokens stay in $home." >&2

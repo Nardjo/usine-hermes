@@ -10,16 +10,16 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
    ```sh
    curl -fsSL https://raw.githubusercontent.com/Nardjo/usine-hermes/main/install.sh | sudo bash
    ```
-   Answer `init` with your user id as allowlist, keep `honcho: true`. Let `bootstrap` run; paste the OpenRouter key when asked. Expect `Honcho healthy` and `bootstrap done`.
-2. **Idempotency**: `sudo usine-hermes bootstrap` again. Expect `Hermes ... already installed, skipping installer`, `Docker with compose already installed`, no key prompt, `bootstrap done`. Re-run the install one-liner and answer `n`: no error.
+   Expect exactly three questions: your Discord id, the OpenRouter key (hidden), Vulcain `[O/n]` (answer `n` for now). Expect `Honcho healthy`, `bootstrap done`, then a `doctor` summary. `/etc/usine-hermes/openrouter.key` is `root:root 600`.
+2. **Idempotency**: re-run the install one-liner. Expect no Discord id or key question (`config gardée`), `Hermes ... already installed, skipping installer`, `Docker with compose already installed`, `bootstrap done`; only the Vulcain question again.
 3. **Two profiles**
    ```sh
-   sudo usine-hermes create alice --provider openrouter   # paste key + bot A token
-   sudo usine-hermes create bob --provider openrouter     # paste key + bot B token
-   sudo usine-hermes start alice && sudo usine-hermes start bob
-   sudo usine-hermes list                                 # both active, token=set
+   sudo usine-hermes create alice     # one sentence + bot A token: "alice créée et démarrée"
+   sudo usine-hermes create bob       # one sentence + Enter: prints "sudo usine-hermes secret bob"
+   sudo usine-hermes secret bob       # bot B token: bob starts by itself
+   sudo usine-hermes list             # both active, token=set
    ```
-   Also check refusals: `create root` (non-managed user), `start` with a token copied from the other profile.
+   `create` asks exactly two questions and never the key; `alice`'s `.env` holds the shared key (`alice:alice 600`). Also check refusals: `create root` (non-managed user), `secret bob` with alice's token.
 4. **Discord**: invite both bots. Mention each from your account: both answer. Message without a mention: silence. Mention from the non-allowlisted account: silence.
 5. **Memory**: tell alice a fact, start a new conversation (or wait a few minutes for the deriver), ask about it: alice recalls it.
 6. **Doctor**: `sudo usine-hermes doctor` and `sudo usine-hermes doctor alice`: every line `ok`, including `alice cannot-read-bob` and `bob cannot-read-alice`.
@@ -27,14 +27,9 @@ You need: an OpenRouter key (Honcho + profiles), two Discord applications with b
 8. **Reboot**: `sudo reboot`, then `list` (both active), `doctor` green, both bots answer.
 9. **Exposure**: `sudo ss -tlnp`: Honcho only on `127.0.0.1:8000`; no Postgres (5432) or Redis (6379) listener on any interface.
 10. **Destroy**: `sudo usine-hermes destroy bob` (type `bob`). Then `id bob` and `getent group bob` fail, `/var/lib/usine-hermes/bob`, `/etc/usine-hermes/profiles/bob` and `/etc/systemd/system/usine-bob.service*` are gone, `list` and `doctor` show only alice.
-11. **Vulcain**
-    ```sh
-    sudo usine-hermes create vulcain --preset vulcain --provider openrouter
-    sudo usine-hermes secret vulcain DISCORD_BOT_TOKEN && sudo usine-hermes secret vulcain OPENROUTER_API_KEY
-    sudo usine-hermes start vulcain
-    ```
-    On Discord ask it to create `carol` (openrouter). Expect: it repeats the values and waits for your yes, then gives you the Discord steps and the `secret` + `start` commands, and never asks for a token. `list` shows `carol inactive token=empty`. Run the `secret` commands yourself, then ask Vulcain to start `carol`: it answers on Discord. Ask Vulcain to destroy or stop `carol`, to set a secret, and to restart itself: each refused. `sudo usine-hermes doctor`: all `ok`, including `vulcain cannot-read-carol` and `carol cannot-read-vulcain`.
-12. Optional: a third profile with a subscription provider (`claude-subscription-directsdk-experimental`, `openai-codex` or `xai-oauth`), login at `create`, start, answer on Discord.
+11. **Vulcain**: re-run the install one-liner and answer `O`, then paste Vulcain's bot token. Expect `✓ Vulcain est en ligne : parle-lui sur Discord.`
+    On Discord ask it to create `carol`. Expect: it asks only the name and what carol does, repeats them and waits for your yes, then gives you the Discord steps and one command, `sudo usine-hermes secret carol`, and never asks for a token. `list` shows `carol inactive token=empty`. Run the command yourself: carol starts and answers on Discord. Ask Vulcain to destroy or stop `carol`, to set a secret, and to restart itself: each refused. `sudo usine-hermes doctor`: all `ok`, including `vulcain cannot-read-carol` and `carol cannot-read-vulcain`.
+12. Optional: a third profile with a subscription provider (`create dave --provider openai-codex`, or `claude-subscription-directsdk-experimental`, `xai-oauth`), login at `create`, answer on Discord.
 
 ## Checklist of unverified assumptions
 
@@ -62,7 +57,7 @@ Tick each one on the VPS; open an issue for any failure.
 - [ ] Docker from the official repo installs on Ubuntu 24.04, Debian 12 and Debian 13; `docker compose version` >= v2.24
 - [ ] The ghcr image entrypoint works without a build; `/health` answers within 180 s
 - [ ] `ss -tlnp`: only `127.0.0.1:8000` from Honcho
-- [ ] Honcho is back after reboot; a `bootstrap` re-run keeps the DB password and does not re-ask the key
+- [ ] Honcho is back after reboot; a `bootstrap` re-run keeps the DB password and asks nothing
 - [ ] Workspace `POST /v3/workspaces` is idempotent
 - [ ] OpenRouter accepts `openai/gpt-5.4-mini` and the embeddings model `openai/text-embedding-3-small`
 - [ ] The agent recalls facts across conversations
