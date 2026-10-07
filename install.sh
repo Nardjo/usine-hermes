@@ -54,4 +54,11 @@ if [[ ! -f /etc/usine-hermes/profiles/vulcain ]]; then
   read -r -p "Installer Vulcain, l'agent qui crée les autres agents depuis Discord ? [O/n] " yn || yn=n
   [[ $yn == [nN]* ]] || "$cli" create vulcain --preset vulcain
 fi
-"$cli" doctor || true
+# One clear next step instead of a full doctor report (run `usine-hermes doctor` for that).
+if systemctl is-active --quiet usine-vulcain.service; then
+  echo "✓ Installé. Vulcain est en ligne : parle-lui sur Discord."
+elif [[ -f /etc/usine-hermes/profiles/vulcain ]]; then
+  echo "✓ Installé. Pour démarrer Vulcain : sudo usine-hermes secret vulcain"
+else
+  echo "✓ Installé. Crée ton premier agent : sudo usine-hermes create <nom>"
+fi
