@@ -5,10 +5,6 @@
 home_root: /var/lib/usine-hermes
 # Hermes Agent tag installed once, shared read-only by all profiles.
 hermes_version: v2026.9.24
-# Provider preselected by `create`: openrouter, anthropic,
-# claude-subscription-directsdk-experimental, openai-api, openai-codex,
-# xai, xai-oauth, gemini, deepseek.
-default_provider: openrouter
 
 # Default model per provider (key: model_<provider id with - as _>).
 model_openrouter: z-ai/glm-5.2
