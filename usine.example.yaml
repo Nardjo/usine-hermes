@@ -1,0 +1,34 @@
+# usine-hermes machine config: /etc/usine-hermes/usine.yaml (written by `usine-hermes init`).
+# Flat `key: value` lines only. Never put secrets here. USINE_CONFIG overrides the path.
+# The shared OpenRouter key lives next to it, root-only: openrouter.key (mode 600).
+
+# Language of the CLI prompts and messages: en or fr (asked first at install).
+lang: en
+# Parent directory of every profile home (<home_root>/<name>).
+home_root: /var/lib/usine-hermes
+# Hermes Agent tag installed once, shared read-only by all profiles.
+hermes_version: v2026.9.24
+
+# Default model per provider (key: model_<provider id with - as _>).
+model_openrouter: z-ai/glm-5.2
+model_anthropic: claude-sonnet-4-6
+model_claude_subscription_directsdk_experimental: sonnet
+model_openai_api: gpt-6-sol
+model_openai_codex: gpt-6-sol
+model_xai: grok-4.6
+model_xai_oauth: grok-4.6
+model_gemini: gemini-3.8-flash
+model_deepseek: deepseek-flash
+
+# Discord user ids allowed to talk to every agent, comma-separated.
+# Empty means nobody is allowed.
+discord_allowed_users:
+# Self-hosted Honcho memory (false skips Docker and Honcho in bootstrap).
+honcho: true
+# Your name as seen by Honcho in every profile's memory.
+peer_name: owner
+# Local Honcho API (bound to 127.0.0.1 only).
+honcho_url: http://127.0.0.1:8000
+# Most managed profiles (operator included) a Vulcain operator may reach
+# with create. The human's own `create` is not capped.
+max_profiles: 10

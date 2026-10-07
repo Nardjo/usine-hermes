@@ -1,0 +1,884 @@
+#!/usr/bin/env bash
+# usine-hermes: run isolated Hermes Agent profiles on one VPS.
+set -euo pipefail
+
+die() {
+  printf 'usine-hermes: %s\n' "$1" >&2
+  exit "${2:-1}"
+}
+
+usage() {
+  if [[ $UI_LANG == fr ]]; then
+    cat <<'EOF'
+Usage : usine-hermes <commande> [args] [--dry-run]
+
+Commandes :
+  init                 demande la langue, l'ID Discord et la clé OpenRouter, écrit la config une fois
+  config <clé>         affiche une valeur de config
+  bootstrap            installe Hermes, Docker et Honcho (idempotent)
+  create <nom> [--mission T] [--personality T] [--provider P] [--preset vulcain]
+                       crée un profil isolé ; le démarre si un token est donné
+  secret <nom> [CLÉ]   définit le token Discord (puis démarre) ou une CLÉ (masquée)
+  start <nom>          active et démarre un profil
+  stop <nom>           arrête un profil
+  restart <nom>        redémarre un profil
+  status <nom>         état de l'unité et présence du token
+  logs <nom> [-n N]    logs, secrets masqués
+  list                 liste les profils gérés
+  destroy <nom>        supprime un profil (demande de taper son nom)
+  doctor [nom]         vérifie toute l'installation ou un profil
+  help                 affiche cette aide
+
+--dry-run affiche les commandes au lieu de les lancer.
+EOF
+    return
+  fi
+  cat <<'EOF'
+Usage: usine-hermes <command> [args] [--dry-run]
+
+Commands:
+  init                 ask the language, the Discord id and OpenRouter key, write the config once
+  config <key>         print one config value
+  bootstrap            install Hermes, Docker and Honcho (idempotent)
+  create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]
+                       create an isolated profile; starts it if given a token
+  secret <name> [KEY]  set the Discord token (then start) or one KEY (hidden)
+  start <name>         enable and start a profile
+  stop <name>          stop a profile
+  restart <name>       restart a profile
+  status <name>        show unit state and token presence
+  logs <name> [-n N]   show redacted logs
+  list                 list managed profiles
+  destroy <name>       remove a profile (asks to type its name)
+  doctor [name]        check the whole setup or one profile
+  help                 show this help
+
+--dry-run prints the commands instead of running them.
+EOF
+}
+
+DRY_RUN=0
+CONFIG=${USINE_CONFIG:-/etc/usine-hermes/usine.yaml}
+
+# Hermes provider ids offered by create; model keys are model_<id with - as _>.
+PROVIDERS="openrouter anthropic claude-subscription-directsdk-experimental openai-api openai-codex xai xai-oauth gemini deepseek"
+
+# Run a command, or only print it (shell-quoted) under --dry-run.
+run() {
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '+'
+    printf ' %q' "$@"
+    printf '\n'
+  else
+    "$@"
+  fi
+}
+
+# Profile names double as Linux user, unit and Honcho workspace names.
+check_name() {
+  [[ ${1:-} =~ ^[a-z][a-z0-9-]{1,30}$ ]] ||
+    die "$(t "invalid name '${1:-}': expected ^[a-z][a-z0-9-]{1,30}\$" "nom invalide '${1:-}' : attendu ^[a-z][a-z0-9-]{1,30}\$")" 2
+}
+
+# Print one value of the flat key: value config (surrounding quotes stripped).
+cfg() {
+  [[ -r $CONFIG ]] || die "$(t "no config at $CONFIG (run: sudo usine-hermes init)" "pas de config dans $CONFIG (lance : sudo usine-hermes init)")"
+  awk -v k="$1" '
+    index($0, k ":") == 1 {
+      v = substr($0, length(k) + 2)
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
+      print v; found = 1; exit
+    }
+    END { exit !found }' "$CONFIG" || die "$(t "unknown config key: $1" "clé de config inconnue : $1")"
+}
+
+# Operator language: USINE_LANG, then the config's lang, default en.
+UI_LANG=${USINE_LANG:-en}
+[[ -n ${USINE_LANG:-} ]] || UI_LANG=$(cfg lang 2>/dev/null) || UI_LANG=en
+
+# t <english> <french>: print the one in the operator's language.
+t() { if [[ $UI_LANG == fr ]]; then printf '%s\n' "$2"; else printf '%s\n' "$1"; fi; }
+
+# check_value <key> <value>: values that feed sed, honcho.json, URLs and
+# rm -rf paths must match a strict pattern.
+check_value() {
+  local re=
+  case $1 in
+    home_root) re='^/[A-Za-z0-9/._-]*[A-Za-z0-9._-]$' ;;
+    hermes_version) re='^v[0-9]+\.[0-9]+\.[0-9]+$' ;;
+    peer_name) re='^[A-Za-z0-9_-]{1,64}$' ;;
+    honcho_url) re='^(http://127\.0\.0\.1:[0-9]+|https?://[A-Za-z0-9.:-]+)$' ;;
+    discord_allowed_users) re='^([0-9]+(,[0-9]+)*)?$' ;;
+  esac
+  [[ $2 =~ $re ]] || die "$(t "invalid $1: '$2' (must match $re)" "$1 invalide : '$2' (doit correspondre à $re)")" 2
+  [[ $1 != home_root || /$2/ != */../* ]] || die "$(t "invalid home_root: '$2' (no ..)" "home_root invalide : '$2' (pas de ..)")" 2
+}
+
+# Validate every checked key of the loaded config once, before any command.
+check_config() {
+  local key value
+  for key in home_root hermes_version peer_name honcho_url discord_allowed_users; do
+    value=$(cfg "$key")
+    check_value "$key" "$value"
+  done
+}
+
+# ask <var> <prompt>: read one answer from stdin.
+ask() {
+  local _reply=
+  printf '%s ' "$2" >&2
+  read -r _reply || true
+  printf -v "$1" '%s' "$_reply"
+}
+
+# Shared OpenRouter key (Honcho + default profile key), root-only next to the config.
+KEY_FILE=$(dirname "$CONFIG")/openrouter.key
+
+# Writes the config and the shared key once; a re-run keeps them, asks nothing.
+cmd_init() {
+  [[ ! -e $CONFIG ]] || { t "config kept: $CONFIG" "config gardée : $CONFIG"; return; }
+  local allow key honcho=true
+  # First question, bilingual; USINE_LANG answers it (tests, scripts).
+  [[ -n ${USINE_LANG:-} ]] || ask UI_LANG "Language / Langue : [1] English  [2] Français  (Enter = 1)"
+  if [[ $UI_LANG == 2 || $UI_LANG == fr ]]; then UI_LANG=fr; else UI_LANG=en; fi
+  ask allow "$(t "Your Discord id (Discord > Developer Mode > right-click yourself > Copy User ID):" \
+    "Ton ID Discord (Discord > Mode développeur > clic droit sur toi > Copier l'identifiant) :")"
+  allow=${allow// /}
+  [[ -n $allow ]] || die "$(t "a Discord id is needed: only its owner may talk to the agents" \
+    "il faut un ID Discord : seul son propriétaire peut parler aux agents")" 2
+  check_value discord_allowed_users "$allow"
+  secret key "$(t "OpenRouter key (memory + agents, hidden, Enter = no memory):" \
+    "Clé OpenRouter (mémoire + agents, saisie masquée, Entrée = sans mémoire) :")"
+  [[ -n $key ]] || honcho=false
+
+  run mkdir -p "$(dirname "$CONFIG")"
+  # Owned by the caller (root on a VPS); readable, it holds no secrets.
+  write_file 644 "$EUID" "$CONFIG" <<EOF
+# usine-hermes machine config (no secrets). See usine.example.yaml.
+lang: $UI_LANG
+home_root: /var/lib/usine-hermes
+hermes_version: v2026.9.24
+model_openrouter: z-ai/glm-5.2
+model_anthropic: claude-sonnet-4-6
+model_claude_subscription_directsdk_experimental: sonnet
+model_openai_api: gpt-6-sol
+model_openai_codex: gpt-6-sol
+model_xai: grok-4.6
+model_xai_oauth: grok-4.6
+model_gemini: gemini-3.8-flash
+model_deepseek: deepseek-flash
+discord_allowed_users: $allow
+honcho: $honcho
+peer_name: owner
+honcho_url: http://127.0.0.1:8000
+max_profiles: 10
+EOF
+  # printf is a builtin: the key never reaches a process argv.
+  [[ -z $key ]] || printf '%s\n' "$key" | write_file 600 "$EUID" "$KEY_FILE" secret
+}
+
+HERMES_REPO=https://github.com/NousResearch/hermes-agent
+# Upstream FHS layout when its installer runs as root without --dir.
+HERMES_DIR=/usr/local/lib/hermes-agent
+# Root's HERMES_HOME; the installer puts its managed uv in <home>/bin.
+ROOT_HERMES_HOME=/root/.hermes
+
+need_root() {
+  [[ $DRY_RUN == 1 || $EUID -eq 0 ]] ||
+    die "$(t "$1 must run as root (try: sudo usine-hermes $1)" "$1 doit être lancé en root (essaie : sudo usine-hermes $1)")"
+}
+
+need_os() {
+  [[ $DRY_RUN == 1 ]] && return
+  local os
+  # shellcheck source=/dev/null
+  os=$( . "${USINE_OS_RELEASE:-/etc/os-release}" && echo "${ID:-} ${VERSION_ID:-}" ) || os=unknown
+  [[ $os == "ubuntu 24.04" || $os == "debian 12" || $os == "debian 13" ]] ||
+    die "$(t "unsupported OS ($os): only Ubuntu 24.04, Debian 12 and Debian 13 are supported" \
+      "OS non pris en charge ($os) : seuls Ubuntu 24.04, Debian 12 et Debian 13 le sont")"
+}
+
+# Commit of a Hermes tag. Annotated tags list their commit as <tag>^{};
+# reverse sort puts it first.
+tag_sha() {
+  local sha
+  sha=$(git ls-remote "$HERMES_REPO" "refs/tags/$1^{}" "refs/tags/$1" |
+    sort -rk2 | awk 'NR == 1 { print $1 }')
+  [[ $sha =~ ^[0-9a-f]{40}$ ]] && echo "$sha"
+}
+
+# uv after the Hermes install: its managed copy first, then usual places.
+find_uv() {
+  local candidate
+  for candidate in "$ROOT_HERMES_HOME/bin/uv" /root/.local/bin/uv /usr/local/bin/uv "$(command -v uv || true)"; do
+    [[ -n $candidate && -x $candidate ]] && { echo "$candidate"; return; }
+  done
+  return 1
+}
+
+# Install Hermes once, shared and read-only for profiles, at the pinned tag.
+bootstrap_hermes() {
+  local tag sha uv installer=/tmp/hermes-install.sh
+  tag=$(cfg hermes_version)
+  if [[ $DRY_RUN == 1 ]]; then
+    run git ls-remote "$HERMES_REPO" "refs/tags/$tag^{}" "refs/tags/$tag"
+    sha="<sha-of-$tag>"
+    echo "# skip installer if git -C $HERMES_DIR rev-parse HEAD is at $sha"
+  else
+    sha=$(tag_sha "$tag") || die "$(t "cannot resolve Hermes tag $tag" "impossible de résoudre le tag Hermes $tag")"
+  fi
+
+  if [[ $DRY_RUN == 0 && $(git -C "$HERMES_DIR" rev-parse HEAD 2>/dev/null) == "$sha" ]]; then
+    t "Hermes $tag already installed ($sha), skipping installer" "Hermes $tag déjà installé ($sha), installeur ignoré"
+  else
+    [[ $DRY_RUN == 1 ]] || installer=$(mktemp)
+    # By commit, not tag: a moved tag cannot swap the installer we run.
+    run curl -fsSL -o "$installer" \
+      "https://raw.githubusercontent.com/NousResearch/hermes-agent/$sha/scripts/install.sh"
+    # No --dir: it would break the system layout (launcher in /usr/local/bin).
+    run bash "$installer" --commit "$sha" --non-interactive --skip-browser \
+      --skip-computer-use --hermes-home "$ROOT_HERMES_HOME"
+    run rm -f "$installer"
+  fi
+
+  uv=$ROOT_HERMES_HOME/bin/uv
+  [[ $DRY_RUN == 1 ]] || uv=$(find_uv) ||
+    die "$(t "uv not found after the Hermes install (looked in $ROOT_HERMES_HOME/bin, /root/.local/bin, /usr/local/bin, PATH)" \
+      "uv introuvable après l'installation de Hermes (cherché dans $ROOT_HERMES_HOME/bin, /root/.local/bin, /usr/local/bin, PATH)")"
+  # Discord + Honcho client deps are lazy upstream (installed into the venv on
+  # first use); root pre-bakes them so profiles never write here. Locked, so a
+  # re-run changes nothing. Inferred from upstream's Dockerfile. The honcho
+  # extra (honcho-ai==2.2.0) exists at v2026.9.24 but is not part of "all".
+  run env UV_PROJECT_ENVIRONMENT="$HERMES_DIR/venv" UV_PYTHON="$HERMES_DIR/venv/bin/python" \
+    "$uv" sync --extra all --extra messaging --extra honcho --locked \
+    --project "$HERMES_DIR"
+  run chown -R root:root "$HERMES_DIR"
+  run chmod -R go-w "$HERMES_DIR"
+  # Profiles cannot reach /root; lazy installs as a profile need uv on PATH.
+  [[ $uv == /usr/local/bin/uv ]] || run install -m 755 "$uv" /usr/local/bin/uv
+}
+
+HONCHO_DIR=/opt/usine-hermes/honcho
+
+# Docker from Docker's official apt repo (compose v2.24+ needed by Honcho).
+bootstrap_docker() {
+  if [[ $DRY_RUN == 0 ]] && docker compose version >/dev/null 2>&1; then
+    t "Docker with compose already installed" "Docker avec compose déjà installé"
+  else
+    local id="<os-id>" codename="<codename>" arch="<arch>"
+    if [[ $DRY_RUN == 0 ]]; then
+      # shellcheck source=/dev/null
+      read -r id codename < <(. "${USINE_OS_RELEASE:-/etc/os-release}" && echo "$ID $VERSION_CODENAME")
+      arch=$(dpkg --print-architecture)
+    fi
+    run install -m 755 -d /etc/apt/keyrings
+    run curl -fsSL -o /etc/apt/keyrings/docker.asc "https://download.docker.com/linux/$id/gpg"
+    run chmod a+r /etc/apt/keyrings/docker.asc
+    echo "deb [arch=$arch signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$id $codename stable" |
+      write_file 644 root:root /etc/apt/sources.list.d/docker.list
+    run apt-get update
+    run env DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  fi
+  run systemctl enable --now docker
+}
+
+# Honcho stack in $HONCHO_DIR. Its .env keeps the DB password across re-runs;
+# the OpenRouter key is the shared one stored by init.
+bootstrap_honcho() {
+  local honcho_env=$HONCHO_DIR/.env pw key="" model=openai/gpt-5.4-mini level url i
+  pw=$(env_get "$honcho_env" POSTGRES_PASSWORD)
+  # Hex: safe inside the connection URI without encoding.
+  [[ -n $pw ]] || pw=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
+  [[ ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
+  [[ $DRY_RUN == 0 ]] || echo "# Honcho key: $KEY_FILE"
+  [[ -n $key || $DRY_RUN == 1 ]] ||
+    die "$(t "Honcho needs the OpenRouter key in $KEY_FILE (or set honcho: false)" \
+      "Honcho a besoin de la clé OpenRouter dans $KEY_FILE (ou mets honcho: false)")"
+
+  run install -d -m 700 "$HONCHO_DIR"
+  run install -m 644 "$TEMPLATES/honcho-compose.yml" "$HONCHO_DIR/docker-compose.yml"
+  echo 'CREATE EXTENSION IF NOT EXISTS vector;' | write_file 644 root:root "$HONCHO_DIR/init.sql"
+  # printf is a builtin: secrets never reach a process argv.
+  {
+    printf 'POSTGRES_PASSWORD=%s\nAUTH_USE_AUTH=false\n' "$pw"
+    printf 'LLM_OPENAI_API_KEY=%s\nLLM_OPENAI_BASE_URL=https://openrouter.ai/api/v1\n' "$key"
+    printf '%s=%s\n' DERIVER_MODEL_CONFIG__MODEL "$model" SUMMARY_MODEL_CONFIG__MODEL "$model" \
+      DREAM_DEDUCTION_MODEL_CONFIG__MODEL "$model" DREAM_INDUCTION_MODEL_CONFIG__MODEL "$model"
+    for level in minimal low medium high max; do
+      printf 'DIALECTIC_LEVELS__%s__MODEL_CONFIG__MODEL=%s\n' "$level" "$model"
+    done
+    printf 'EMBEDDING_MODEL_CONFIG__MODEL=openai/text-embedding-3-small\n'
+    printf 'EMBEDDING_MODEL_CONFIG__TRANSPORT=openai\n'
+    printf 'EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL=https://openrouter.ai/api/v1\n'
+  } | write_file 600 root:root "$honcho_env" secret
+  run docker compose -f "$HONCHO_DIR/docker-compose.yml" up -d
+
+  url=$(cfg honcho_url)/health
+  if [[ $DRY_RUN == 1 ]]; then
+    echo "# wait up to 180s for: curl -fsS $url"
+    return
+  fi
+  for ((i = 0; i < 90; i++)); do
+    curl -fsS "$url" >/dev/null 2>&1 && { t "Honcho healthy" "Honcho opérationnel"; return; }
+    sleep 2
+  done
+  die "$(t "Honcho not healthy after 180s (see: docker compose -f $HONCHO_DIR/docker-compose.yml logs)" \
+    "Honcho pas opérationnel après 180 s (voir : docker compose -f $HONCHO_DIR/docker-compose.yml logs)")"
+}
+
+cmd_bootstrap() {
+  need_root bootstrap
+  need_os
+  run apt-get update
+  run env DEBIAN_FRONTEND=noninteractive apt-get install -y git curl tar coreutils ca-certificates
+  bootstrap_hermes
+  if [[ $(cfg honcho) == true ]]; then
+    bootstrap_docker
+    bootstrap_honcho
+  fi
+  t "bootstrap done" "bootstrap terminé"
+}
+
+# Repo checkout first (tests, ./bin/usine-hermes), then the install.sh location.
+TEMPLATES=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/templates
+[[ -d $TEMPLATES ]] || TEMPLATES=/usr/local/share/usine-hermes/templates
+SKILL=$(dirname "$TEMPLATES")/skills/usine-hermes/SKILL.md
+# Installed CLI: the only command the Vulcain preset may run as root.
+BIN=/usr/local/bin/usine-hermes
+
+# Env var holding the API key of a provider; empty for subscription providers.
+key_var() {
+  case $1 in
+    openrouter) echo OPENROUTER_API_KEY ;;
+    anthropic) echo ANTHROPIC_API_KEY ;;
+    openai-api) echo OPENAI_API_KEY ;;
+    xai) echo XAI_API_KEY ;;
+    gemini) echo GEMINI_API_KEY ;;
+    deepseek) echo DEEPSEEK_API_KEY ;;
+  esac
+}
+
+home_of() { printf '%s/%s' "$(cfg home_root)" "$1"; }
+unit_of() { printf 'usine-%s.service' "$1"; }
+env_file() { printf '%s/.hermes/.env' "$(home_of "$1")"; }
+
+# env_get <file> <key>: value of the first KEY= line (empty if unset or unreadable).
+env_get() {
+  awk -v k="$2=" 'index($0, k) == 1 { print substr($0, length(k) + 1); exit }' \
+    "$1" 2>/dev/null || true
+}
+
+# Ownership markers live in a root-owned registry next to the config, never in
+# a profile-writable home. Only profiles listed there are ever touched.
+REGISTRY=$(dirname "$CONFIG")/profiles
+
+need_managed() {
+  [[ -f $REGISTRY/$1 ]] || die "$(t "$1 is not a managed profile" "$1 n'est pas un profil géré")"
+}
+
+# Managed profile names, one per line.
+profiles() {
+  local marker
+  for marker in "$REGISTRY"/*; do
+    [[ -f $marker ]] && basename "$marker"
+  done
+  return 0
+}
+
+# Provider recorded at create time in the root-owned marker.
+provider_of() { env_get "$REGISTRY/$1" provider; }
+
+token_of() { env_get "$(env_file "$1")" DISCORD_BOT_TOKEN; }
+
+token_state() {
+  if [[ ! -r $(env_file "$1") ]]; then echo "token=unknown"
+  elif [[ -n $(token_of "$1") ]]; then echo "token=set"
+  else echo "token=empty"; fi
+}
+
+# write_file <mode> <owner> <path> [secret]: stdin to a fresh file (umask 077,
+# noclobber), then chown/chmod. Never writes through an existing file, link or
+# looser mode. Dry-run prints the target, and the content unless secret.
+write_file() {
+  if [[ $DRY_RUN == 1 ]]; then
+    printf '+ write %s (mode %s, owner %s)\n' "$3" "$1" "$2"
+    if [[ ${4:-} == secret ]]; then cat >/dev/null; else sed 's/^/| /'; fi
+    return
+  fi
+  rm -f "$3"
+  (umask 077 && set -C && cat >"$3")
+  chown "$2" "$3"
+  chmod "$1" "$3"
+}
+
+render() {
+  sed -e "s|__NAME__|$1|g" -e "s|__HOME_ROOT__|$(cfg home_root)|g" \
+    -e "s|__HOME__|$(home_of "$1")|g" "$TEMPLATES/$2"
+}
+
+# Run a command as the profile user inside its own Hermes home.
+as_profile() {
+  local name=$1 home
+  home=$(home_of "$1")
+  shift
+  (cd / && run runuser -u "$name" -- env HOME="$home" HERMES_HOME="$home/.hermes" \
+    HERMES_LAZY_INSTALL_TARGET="$home/lazy-packages" \
+    PATH="$home/.local/bin:/usr/local/bin:/usr/bin:/bin" "$@")
+}
+
+# Limits shown before a subscription login.
+sub_warning() {
+  case $1 in
+    claude-subscription-directsdk-experimental)
+      t "Claude subscription runs through Hermes' experimental claude-subscription-directsdk plugin:
+it may break on upgrades, bills your Agent SDK allowance (~1.7x a normal session),
+needs a Max plan plus extra-usage credits, and refuses ANTHROPIC_* variables in .env." \
+        "L'abonnement Claude passe par le plugin expérimental claude-subscription-directsdk de Hermes :
+il peut casser aux mises à jour, consomme ton quota Agent SDK (~1,7x une session normale),
+exige un plan Max avec des crédits d'usage supplémentaires, et refuse les variables ANTHROPIC_* dans .env." ;;
+    openai-codex)
+      t "ChatGPT subscription (openai-codex): the plan quota for agent use is undocumented;
+a busy bot may hit limits without notice." \
+        "Abonnement ChatGPT (openai-codex) : le quota du plan pour un agent n'est pas documenté ;
+un bot très actif peut atteindre la limite sans prévenir." ;;
+    xai-oauth)
+      t "SuperGrok subscription (xai-oauth): some SuperGrok tiers answer 403;
+check your plan if the bot only gets refusals." \
+        "Abonnement SuperGrok (xai-oauth) : certaines formules SuperGrok répondent 403 ;
+vérifie ta formule si le bot ne reçoit que des refus." ;;
+  esac
+}
+
+# Interactive login as the profile user (device or paste code, no browser on the VPS).
+sub_login() {
+  case $2 in
+    claude-subscription-directsdk-experimental) as_profile "$1" claude auth login ;;
+    *) as_profile "$1" hermes auth add "$2" ;;
+  esac
+}
+
+# secret <var> <prompt>: hidden answer, Enter leaves it empty.
+secret() {
+  local v=
+  printf '%s ' "$2" >&2
+  read -rs v || true
+  printf '\n' >&2
+  printf -v "$1" '%s' "$v"
+}
+
+# "d'alice", "de bob": French elision before a vowel.
+of() { if [[ $1 == [aeiouyh]* ]]; then printf "d'%s" "$1"; else printf 'de %s' "$1"; fi; }
+
+# check_token <name> <token>: one Discord bot per profile.
+check_token() {
+  local other
+  for other in $(profiles); do
+    [[ $other != "$1" && $(token_of "$other") == "$2" ]] &&
+      die "$(t "$1: Discord token already used by $other" "$1 : token Discord déjà utilisé par $other")"
+  done
+  return 0
+}
+
+# Operator bits of the Vulcain preset: its skill, a pre-approved bridge
+# command (no blanket YOLO), one sudoers rule, and the NoNewPrivileges drop-in.
+install_vulcain() {
+  local name=$1 hermes_home sudoers=/etc/sudoers.d/usine-hermes-$1
+  hermes_home=$(home_of "$name")/.hermes
+  run install -d -m 700 -o "$name" -g "$name" "$hermes_home/skills" "$hermes_home/skills/usine-hermes"
+  run install -m 644 -o "$name" -g "$name" "$SKILL" "$hermes_home/skills/usine-hermes/SKILL.md"
+  as_profile "$name" hermes config set command_allowlist "[\"sudo -n $BIN bridge *\"]"
+  # sudo ignores sudoers.d names with a dot: stage, check, then publish.
+  echo "$name ALL=(root) NOPASSWD: $BIN bridge *" | write_file 440 root:root "$sudoers.new"
+  run visudo -cf "$sudoers.new"
+  run mv "$sudoers.new" "$sudoers"
+  render "$name" vulcain.conf | write_file 644 root:root "/etc/systemd/system/$(unit_of "$name").d/vulcain.conf"
+}
+
+cmd_create() {
+  local name=$1 label=$1 personality="" mission="" provider="" preset="" home hermes_home unit
+  shift
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --personality | --mission | --provider | --preset)
+        [[ $# -ge 2 ]] || die "$(t "$1 needs a value" "$1 attend une valeur")" 2
+        printf -v "${1#--}" '%s' "$2"
+        shift 2
+        ;;
+      *) die "$(t "unknown flag: $1" "option inconnue : $1")" 2 ;;
+    esac
+  done
+  # The preset brings its own SOUL.md: nothing to ask.
+  case $preset in
+    "") ;;
+    vulcain) personality=preset mission=preset label=Vulcain ;;
+    *) die "$(t "unknown preset: $preset (only: vulcain)" "preset inconnu : $preset (seul : vulcain)")" 2 ;;
+  esac
+  need_root create
+  home=$(home_of "$name") hermes_home=$(home_of "$name")/.hermes unit=$(unit_of "$name")
+  [[ ! -f $REGISTRY/$name ]] ||
+    die "$(t "$name is already managed (maybe a failed create); to recreate it run: usine-hermes destroy $name" \
+      "$name est déjà géré (peut-être un create raté) ; pour le recréer : usine-hermes destroy $name")"
+  ! id -u "$name" >/dev/null 2>&1 ||
+    die "$(t "refusing: $name is an existing non-managed Linux user" "refusé : $name est un utilisateur Linux existant non géré")"
+
+  # --mission and no TTY (Vulcain's bridge, a script): never prompt; secrets
+  # left empty are set afterwards with `usine-hermes secret`.
+  local batch=0
+  [[ -n $mission && ! -t 0 ]] && batch=1
+  provider=${provider:-openrouter}
+  [[ " $PROVIDERS " == *" $provider "* ]] || die "$(t "unknown provider: $provider" "fournisseur inconnu : $provider")" 2
+  local key_name login=n key="" token=""
+  key_name=$(key_var "$provider")
+  [[ -n $mission || $batch == 1 ]] || ask mission "$(t "What should $name do? (one sentence):" "Que doit faire $name ? (une phrase) :")"
+  personality=${personality:-helpful, concise and friendly}
+  mission=${mission:-help the operator with day-to-day tasks}
+  # The shared key (stored at init) is the default OpenRouter key.
+  [[ $provider != openrouter || ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
+  if [[ -z $key_name ]]; then
+    sub_warning "$provider" >&2
+    t "The login runs as Linux user $name; its tokens stay in $home." \
+      "La connexion se fait en tant qu'utilisateur Linux $name ; ses jetons restent dans $home." >&2
+    [[ $batch == 1 ]] || ask login "$(t "Log in now? [y/N]" "Se connecter maintenant ? [o/N]")"
+  fi
+
+  # Secrets first so a cancelled prompt leaves nothing half-created.
+  if [[ $batch == 0 ]]; then
+    [[ -z $key_name || -n $key ]] || secret key "$(t "$key_name for $name (hidden):" "$key_name pour $name (saisie masquée) :")"
+    secret token "$(t "Discord bot token for $label (Enter = later):" "Token du bot Discord $(of "$label") (Entrée = plus tard) :")"
+    [[ -z $token ]] || check_token "$name" "$token"
+  fi
+
+  run install -d -m 755 "$(cfg home_root)"
+  run useradd --system --user-group --home-dir "$home" --no-create-home \
+    --shell /usr/sbin/nologin "$name"
+  # Marker right after useradd, so even a failed create can be destroyed.
+  run install -d -m 755 -o root -g root "$REGISTRY"
+  echo "provider=$provider" | write_file 644 root:root "$REGISTRY/$name"
+  run install -d -m 700 -o "$name" -g "$name" "$home" "$hermes_home" "$home/lazy-packages"
+  if [[ -n $preset ]]; then
+    render "$name" vulcain-SOUL.md
+  else
+    printf '# %s\n\n## Personality\n%s\n\n## Mission\n%s\n' "$name" "$personality" "$mission"
+  fi | write_file 644 "$name:$name" "$hermes_home/SOUL.md"
+
+  as_profile "$name" hermes config set model.provider "$provider"
+  as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
+  if [[ $(cfg honcho) == true ]]; then
+    local url
+    url=$(cfg honcho_url)
+    # Get-or-create: safe to repeat.
+    run curl -fsS -o /dev/null -X POST -H 'Content-Type: application/json' \
+      -d "{\"id\":\"$name\"}" "$url/v3/workspaces"
+    printf '{\n  "baseUrl": "%s",\n  "hosts": {\n    "hermes": {\n      "enabled": true,\n      "workspace": "%s",\n      "aiPeer": "%s",\n      "peerName": "%s"\n    }\n  }\n}\n' \
+      "$url" "$name" "$name" "$(cfg peer_name)" | write_file 600 "$name:$name" "$hermes_home/honcho.json"
+    as_profile "$name" hermes config set memory.provider honcho
+  fi
+
+  if [[ $provider == claude-subscription-directsdk-experimental ]]; then
+    # Native installer puts claude in ~/.local/bin of the profile.
+    as_profile "$name" bash -c 'curl -fsSL https://claude.ai/install.sh | bash'
+    as_profile "$name" hermes plugins install claude-subscription-directsdk
+  fi
+
+  # printf is a builtin: secrets never reach a process argv. No key line for
+  # subscriptions (the Claude plugin refuses ANTHROPIC_* in .env).
+  { [[ -z $key_name ]] || printf '%s=%s\n' "$key_name" "$key"
+    printf 'DISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
+      "$token" "$(cfg discord_allowed_users)"; } |
+    write_file 600 "$name:$name" "$hermes_home/.env" secret
+
+  render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
+  run install -d -m 755 "/etc/systemd/system/$unit.d"
+  render "$name" isolate.conf | write_file 644 root:root "/etc/systemd/system/$unit.d/isolate.conf"
+  [[ -z $preset ]] || install_vulcain "$name"
+  run systemctl daemon-reload
+  if [[ -n $key_name ]]; then :
+  elif [[ $login == [oOyY]* ]]; then
+    sub_login "$name" "$provider"
+  else
+    t "Log in later, as root:" "Connexion à faire plus tard, en root :"
+    DRY_RUN=1 sub_login "$name" "$provider" | sed 's/^+ /  sudo /'
+  fi
+  [[ -n $key_name && -z $key ]] &&
+    t "Key to set: sudo usine-hermes secret $name $key_name" "Clé à saisir : sudo usine-hermes secret $name $key_name"
+  if [[ -n $token ]]; then
+    run systemctl enable --now "$unit"
+    if [[ -n $preset ]]; then t "✓ Vulcain is online: talk to it on Discord." "✓ Vulcain est en ligne : parle-lui sur Discord."
+    else t "✓ $name created and started. Mention @$name on Discord." "✓ $name créée et démarrée. Mentionne @$name sur Discord."; fi
+  else
+    t "✓ $name created. Once you have the bot token, it starts with:" "✓ $name créée. Quand tu as le token du bot, il démarre avec :"
+    echo "  sudo usine-hermes secret $name"
+  fi
+}
+
+cmd_start() {
+  local name=$1 token
+  need_root start
+  need_managed "$name"
+  token=$(token_of "$name")
+  [[ -n $token ]] || die "$(t "$name: DISCORD_BOT_TOKEN is empty in $(env_file "$name")" "$name : DISCORD_BOT_TOKEN est vide dans $(env_file "$name")")"
+  check_token "$name" "$token"
+  run systemctl enable --now "$(unit_of "$name")"
+}
+
+# Mask secrets: values from the profile .env, then common token shapes.
+redact() {
+  local env
+  env=$(env_file "$1")
+  [[ -r $env ]] || env=/dev/null
+  awk 'FILENAME == ARGV[1] { i = index($0, "="); v = substr($0, i + 1)
+         if (i && length(v) >= 8) s[v] = 1; next }
+       { for (v in s) while ((i = index($0, v)) > 0)
+           $0 = substr($0, 1, i - 1) "[REDACTED]" substr($0, i + length(v))
+         print }' "$env" - |
+    sed -E -e 's/([A-Za-z_]*(TOKEN|KEY|SECRET|PASSWORD|token|key|secret|password)[":= ]+)[^ ",]+/\1[REDACTED]/g' \
+      -e 's/(Bearer|Bot) [A-Za-z0-9._-]{16,}/\1 [REDACTED]/g' \
+      -e 's/[A-Za-z0-9_-]{23,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{27,}/[REDACTED]/g'
+}
+
+# Keys `secret` may set on a profile: the Discord token and the API key of
+# its own provider (none for subscriptions).
+secret_keys() {
+  echo DISCORD_BOT_TOKEN
+  key_var "$(provider_of "$1")"
+}
+
+# secret <name> [KEY]: no KEY is the Discord token, then a stopped profile starts.
+cmd_secret() {
+  local name=$1 key=${2:-DISCORD_BOT_TOKEN} unit
+  need_managed "$name"
+  grep -qxF -- "$key" <(secret_keys "$name") ||
+    die "$(t "unknown key: '$key' (allowed: $(secret_keys "$name" | paste -sd' ' -))" \
+      "clé inconnue : '$key' (autorisées : $(secret_keys "$name" | paste -sd' ' -))")" 2
+  need_root secret
+  local env value old new
+  env=$(env_file "$name") unit=$(unit_of "$name")
+  if [[ $# -eq 1 ]]; then secret value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
+  else secret value "$(t "$key for $name (hidden):" "$key pour $name (saisie masquée) :")"; fi
+  [[ -n $value ]] || die "$(t "empty value, $key unchanged" "valeur vide, $key inchangée")"
+  [[ $key != DISCORD_BOT_TOKEN ]] || check_token "$name" "$value"
+  # Read as the profile: a planted link cannot make root copy another file.
+  if [[ $DRY_RUN == 1 ]]; then old=$(cat "$env" 2>/dev/null) || old=
+  else old=$(runuser -u "$name" -- cat "$env" 2>/dev/null) || old=; fi
+  # Replace or append; printf and here-strings keep the value off any argv.
+  new=$(grep -v "^$key=" <<<"$old" | grep -v "^\$" || true)
+  printf -v new '%s\n%s=%s' "$new" "$key" "$value"
+  new=${new#$'\n'}
+  [[ $DRY_RUN == 0 ]] || echo "# .env keys: $(cut -d= -f1 <<<"$new" | paste -sd' ' -)"
+  printf '%s\n' "$new" | write_file 600 "$name:$name" "$env" secret
+  t "$key set for $name" "$key enregistrée pour $name"
+  if systemctl is-active "$unit" >/dev/null 2>&1; then
+    t "$name is running: apply with sudo usine-hermes restart $name" "$name tourne : applique avec sudo usine-hermes restart $name"
+  elif [[ $# -eq 1 ]]; then
+    run systemctl enable --now "$unit"
+    t "✓ $name started. Mention @$name on Discord." "✓ $name démarrée. Mentionne @$name sur Discord."
+  fi
+}
+
+cmd_status() {
+  need_managed "$1"
+  systemctl status --no-pager "$(unit_of "$1")" | redact "$1" || true
+  token_state "$1"
+}
+
+cmd_logs() {
+  local name=$1 lines=100
+  shift
+  if [[ ${1:-} == -n ]]; then
+    [[ ${2:-} =~ ^[0-9]+$ ]] || die "$(t "logs: -n needs a number" "logs : -n attend un nombre")" 2
+    lines=$2
+  elif [[ $# -gt 0 ]]; then
+    die "$(t "unknown flag: $1" "option inconnue : $1")" 2
+  fi
+  need_managed "$name"
+  if [[ $DRY_RUN == 1 ]]; then
+    run journalctl -u "$(unit_of "$name")" --no-pager -n "$lines"
+  else
+    journalctl -u "$(unit_of "$name")" --no-pager -n "$lines" | redact "$name"
+  fi
+}
+
+cmd_list() {
+  local p state
+  for p in $(profiles); do
+    state=$(systemctl is-active "$(unit_of "$p")" 2>/dev/null) || true
+    printf '%-24s %-10s %s\n' "$p" "${state:-unknown}" "$(token_state "$p")"
+  done
+}
+
+cmd_destroy() {
+  local name=$1 home unit typed="" user=0
+  need_root destroy
+  need_managed "$name"
+  home=$(home_of "$name") unit=$(unit_of "$name")
+  if id -u "$name" >/dev/null 2>&1; then
+    [[ $(getent passwd "$name" | cut -d: -f6) == "$home" ]] ||
+      die "$(t "refusing: Linux user $name does not live in $home" "refusé : l'utilisateur Linux $name ne vit pas dans $home")"
+    user=1
+  fi
+  printf '%s ' "$(t "Type $name to delete its unit, Linux user and home:" \
+    "Tape $name pour supprimer son unité, son utilisateur Linux et son dossier :")" >&2
+  read -r typed || true
+  [[ $typed == "$name" ]] || die "$(t "aborted" "annulé")"
+
+  run systemctl disable --now "$unit" || true
+  run rm -f "/etc/systemd/system/$unit"
+  run rm -rf "/etc/systemd/system/$unit.d"
+  run rm -f "/etc/sudoers.d/usine-hermes-$name"
+  run systemctl daemon-reload
+  if [[ $user == 1 || $DRY_RUN == 1 ]]; then run userdel "$name"; fi
+  run rm -rf "$home"
+  run rm -f "$REGISTRY/$name"
+  t "destroyed $name" "$name supprimé"
+}
+
+# Bridge for the Vulcain preset, run by sudo (one sudoers rule). Re-validates
+# every argument, logs caller/action/target to the journal, then hands the
+# command to systemd so it runs as root outside the caller's sandbox.
+cmd_bridge() {
+  local caller=${SUDO_USER:-} action=${1:-} target=${2:-} usage n
+  [[ -n $caller ]] || die "bridge: run it through sudo from an operator profile"
+  check_name "$caller"
+  need_managed "$caller"
+  shift || true
+  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P]"
+  case $action in
+    list) [[ $# -eq 0 ]] || die "$usage" 2 ;;
+    doctor)
+      [[ $# -le 1 ]] || die "$usage" 2
+      [[ -z $target ]] || check_name "$target"
+      ;;
+    status | start | restart)
+      check_name "$target"
+      [[ $# -eq 1 ]] || die "$usage" 2
+      ;;
+    logs)
+      check_name "$target"
+      [[ $# -eq 1 || ($# -eq 3 && $2 == -n && $3 =~ ^[1-9][0-9]{0,3}$ && $3 -le 1000) ]] || die "$usage" 2
+      ;;
+    create)
+      check_name "$target"
+      local -A seen=()
+      local flag value next
+      for ((n = 2; n <= $#; n += 2)); do
+        flag=${!n} next=$((n + 1))
+        [[ -z ${seen[$flag]:-} && $next -le $# ]] || die "$usage" 2
+        value=${!next}
+        case $flag in
+          --personality) ((${#value} <= 200)) || die "bridge: personality too long (max 200)" 2 ;;
+          --mission) ((${#value} <= 500)) || die "bridge: mission too long (max 500)" 2 ;;
+          --provider) [[ " $PROVIDERS " == *" $value "* ]] || die "unknown provider: $value" 2 ;;
+          *) die "$usage" 2 ;;
+        esac
+        [[ $value != *[[:cntrl:]]* ]] || die "bridge: control characters in $flag" 2
+        seen[$flag]=1
+      done
+      [[ -n ${seen[--mission]:-} ]] || die "$usage" 2
+      ;;
+    *) die "bridge: '$action' not allowed ($usage)" 2 ;;
+  esac
+  [[ $target != "$caller" || $action == status || $action == logs ]] ||
+    die "bridge: $action on its own profile is not allowed" 2
+  if [[ $action == create ]]; then
+    local max
+    max=$(cfg max_profiles)
+    [[ $max =~ ^[0-9]+$ ]] || die "invalid max_profiles: '$max'" 2
+    (($(profiles | wc -l) < max)) || die "bridge: max_profiles ($max) reached"
+  fi
+  need_root bridge
+  run logger -t usine-hermes-bridge "caller=$caller action=$action target=${target:--}"
+  run systemd-run --wait --pipe --quiet --collect "$BIN" "$action" "$@" </dev/null
+}
+
+# verdict <label> <cmd...>: print ok/FAIL for one check; FAIL sets failed=1.
+verdict() {
+  if "${@:2}" >/dev/null 2>&1; then
+    printf '%-36s ok\n' "$1"
+  else
+    printf '%-36s FAIL\n' "$1"
+    failed=1
+  fi
+}
+
+can_read() { runuser -u "$1" -- test -r "$(env_file "$2")"; }
+cannot_read() { ! can_read "$@"; }
+
+# Read-only, but runuser and the other homes need root. --dry-run lets the
+# tests run it unprivileged against stubs.
+cmd_doctor() {
+  local only=${1:-} all profile other unit home sha failed=0
+  need_root doctor
+  [[ -z $only ]] || need_managed "$only"
+  all=$(profiles)
+
+  sha=$(tag_sha "$(cfg hermes_version)") || sha=unresolved
+  verdict hermes test "$(git -C "$HERMES_DIR" rev-parse HEAD 2>/dev/null)" = "$sha"
+  if [[ $(cfg honcho) == true ]]; then
+    verdict honcho curl -fsS -m 5 "$(cfg honcho_url)/health"
+  fi
+
+  for profile in ${only:-$all}; do
+    unit=$(unit_of "$profile") home=$(home_of "$profile")
+    verdict "$profile unit" test "$(systemctl show "$unit" -p LoadState --value 2>/dev/null) $(
+      systemctl is-active "$unit" 2>/dev/null)" = "loaded active"
+    verdict "$profile drop-in" grep -qF "/etc/systemd/system/$unit.d/isolate.conf" \
+      <<<"$(systemctl show "$unit" -p DropInPaths --value 2>/dev/null)"
+    verdict "$profile token" test -n "$(token_of "$profile")"
+    verdict "$profile home" test "$(stat -c '%U:%G %a' "$home" 2>/dev/null)" = "$profile:$profile 700"
+    verdict "$profile env" test "$(stat -c '%U:%G %a' "$(env_file "$profile")" 2>/dev/null)" = "$profile:$profile 600"
+    # Isolation proof: it reads its own .env (runuser works)...
+    verdict "$profile reads-own-env" can_read "$profile" "$profile"
+  done
+
+  # ...and no other profile's .env, for every ordered pair touching the selection.
+  for profile in $all; do
+    for other in $all; do
+      [[ $other != "$profile" && (-z $only || $only == "$profile" || $only == "$other") ]] || continue
+      verdict "$profile cannot-read-$other" cannot_read "$profile" "$other"
+    done
+  done
+  [[ $failed == 0 ]] || die "$(t "doctor: some checks failed" "doctor : des vérifications ont échoué")"
+}
+
+main() {
+  # --dry-run is accepted anywhere on the command line.
+  local args=() a
+  for a in "$@"; do
+    if [[ $a == --dry-run ]]; then DRY_RUN=1; else args+=("$a"); fi
+  done
+  set -- "${args[@]+"${args[@]}"}"
+
+  local cmd=${1:-help}
+  shift || true
+  case $cmd in
+    help | -h | --help) usage ;;
+    create | start | stop | restart | status | logs | destroy | secret) check_name "${1:-}" ;;&
+    create | start | stop | restart | status | logs | destroy | secret | list | config | bootstrap | doctor | bridge)
+      check_config ;;&
+    create) cmd_create "$@" ;;
+    start) cmd_start "$1" ;;
+    stop | restart)
+      need_root "$cmd"
+      need_managed "$1"
+      run systemctl "$cmd" "$(unit_of "$1")"
+      ;;
+    status) cmd_status "$1" ;;
+    secret) cmd_secret "$@" ;;
+    logs) cmd_logs "$@" ;;
+    list) cmd_list ;;
+    init) cmd_init ;;
+    config) cfg "${1:?usage: usine-hermes config <key>}" ;;
+    bootstrap) cmd_bootstrap ;;
+    bridge) cmd_bridge "$@" ;;
+    destroy) cmd_destroy "$1" ;;
+    doctor)
+      [[ -z ${1:-} ]] || check_name "$1"
+      cmd_doctor "${1:-}"
+      ;;
+    *) die "$(t "unknown command: $cmd (see 'usine-hermes help')" "commande inconnue : $cmd (voir 'usine-hermes help')")" 2 ;;
+  esac
+}
+
+main "$@"

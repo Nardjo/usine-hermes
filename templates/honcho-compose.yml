@@ -1,0 +1,85 @@
+# Honcho memory stack for usine-hermes, from upstream docker-compose.yml.example
+# at v3.2.2: prebuilt pinned image instead of a build, MCP server dropped, only
+# the API published (loopback), generated Postgres password from .env.
+# Installed to /opt/usine-hermes/honcho/docker-compose.yml by `bootstrap`.
+
+services:
+  api:
+    image: ghcr.io/plastic-labs/honcho:v3.2.2
+    entrypoint: ["sh", "docker/entrypoint.sh"]
+    depends_on:
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    environment:
+      - DB_CONNECTION_URI=postgresql+psycopg://postgres:${POSTGRES_PASSWORD:?}@database:5432/postgres
+      - CACHE_URL=redis://redis:6379/0?suppress=true
+      - CACHE_ENABLED=true
+    env_file: .env
+    restart: unless-stopped
+
+  deriver:
+    image: ghcr.io/plastic-labs/honcho:v3.2.2
+    entrypoint: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    depends_on:
+      api:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DB_CONNECTION_URI=postgresql+psycopg://postgres:${POSTGRES_PASSWORD:?}@database:5432/postgres
+      - CACHE_URL=redis://redis:6379/0?suppress=true
+      - CACHE_ENABLED=true
+    env_file: .env
+    restart: unless-stopped
+
+  database:
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    command: ["postgres", "-c", "max_connections=200"]
+    environment:
+      - POSTGRES_DB=postgres
+      - POSTGRES_USER=postgres
+      # Only applied when the volume is first initialised.
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?}
+      - PGDATA=/var/lib/postgresql/data/pgdata
+    volumes:
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:8.2
+    restart: unless-stopped
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:
+  redis-data:
