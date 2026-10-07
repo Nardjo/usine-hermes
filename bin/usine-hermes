@@ -8,11 +8,36 @@ die() {
 }
 
 usage() {
+  if [[ $UI_LANG == fr ]]; then
+    cat <<'EOF'
+Usage : usine-hermes <commande> [args] [--dry-run]
+
+Commandes :
+  init                 demande la langue, l'ID Discord et la clé OpenRouter, écrit la config une fois
+  config <clé>         affiche une valeur de config
+  bootstrap            installe Hermes, Docker et Honcho (idempotent)
+  create <nom> [--mission T] [--personality T] [--provider P] [--preset vulcain]
+                       crée un profil isolé ; le démarre si un token est donné
+  secret <nom> [CLÉ]   définit le token Discord (puis démarre) ou une CLÉ (masquée)
+  start <nom>          active et démarre un profil
+  stop <nom>           arrête un profil
+  restart <nom>        redémarre un profil
+  status <nom>         état de l'unité et présence du token
+  logs <nom> [-n N]    logs, secrets masqués
+  list                 liste les profils gérés
+  destroy <nom>        supprime un profil (demande de taper son nom)
+  doctor [nom]         vérifie toute l'installation ou un profil
+  help                 affiche cette aide
+
+--dry-run affiche les commandes au lieu de les lancer.
+EOF
+    return
+  fi
   cat <<'EOF'
 Usage: usine-hermes <command> [args] [--dry-run]
 
 Commands:
-  init                 ask the Discord id and OpenRouter key, write the config once
+  init                 ask the language, the Discord id and OpenRouter key, write the config once
   config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
   create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]
@@ -52,12 +77,12 @@ run() {
 # Profile names double as Linux user, unit and Honcho workspace names.
 check_name() {
   [[ ${1:-} =~ ^[a-z][a-z0-9-]{1,30}$ ]] ||
-    die "invalid name '${1:-}': expected ^[a-z][a-z0-9-]{1,30}\$" 2
+    die "$(t "invalid name '${1:-}': expected ^[a-z][a-z0-9-]{1,30}\$" "nom invalide '${1:-}' : attendu ^[a-z][a-z0-9-]{1,30}\$")" 2
 }
 
 # Print one value of the flat key: value config (surrounding quotes stripped).
 cfg() {
-  [[ -r $CONFIG ]] || die "no config at $CONFIG (run: sudo usine-hermes init)"
+  [[ -r $CONFIG ]] || die "$(t "no config at $CONFIG (run: sudo usine-hermes init)" "pas de config dans $CONFIG (lance : sudo usine-hermes init)")"
   awk -v k="$1" '
     index($0, k ":") == 1 {
       v = substr($0, length(k) + 2)
@@ -65,8 +90,15 @@ cfg() {
       if (v ~ /^".*"$/ || v ~ /^\047.*\047$/) v = substr(v, 2, length(v) - 2)
       print v; found = 1; exit
     }
-    END { exit !found }' "$CONFIG" || die "unknown config key: $1"
+    END { exit !found }' "$CONFIG" || die "$(t "unknown config key: $1" "clé de config inconnue : $1")"
 }
+
+# Operator language: USINE_LANG, then the config's lang, default en.
+UI_LANG=${USINE_LANG:-en}
+[[ -n ${USINE_LANG:-} ]] || UI_LANG=$(cfg lang 2>/dev/null) || UI_LANG=en
+
+# t <english> <french>: print the one in the operator's language.
+t() { if [[ $UI_LANG == fr ]]; then printf '%s\n' "$2"; else printf '%s\n' "$1"; fi; }
 
 # check_value <key> <value>: values that feed sed, honcho.json, URLs and
 # rm -rf paths must match a strict pattern.
@@ -79,8 +111,8 @@ check_value() {
     honcho_url) re='^(http://127\.0\.0\.1:[0-9]+|https?://[A-Za-z0-9.:-]+)$' ;;
     discord_allowed_users) re='^([0-9]+(,[0-9]+)*)?$' ;;
   esac
-  [[ $2 =~ $re ]] || die "invalid $1: '$2' (must match $re)" 2
-  [[ $1 != home_root || /$2/ != */../* ]] || die "invalid home_root: '$2' (no ..)" 2
+  [[ $2 =~ $re ]] || die "$(t "invalid $1: '$2' (must match $re)" "$1 invalide : '$2' (doit correspondre à $re)")" 2
+  [[ $1 != home_root || /$2/ != */../* ]] || die "$(t "invalid home_root: '$2' (no ..)" "home_root invalide : '$2' (pas de ..)")" 2
 }
 
 # Validate every checked key of the loaded config once, before any command.
@@ -105,19 +137,26 @@ KEY_FILE=$(dirname "$CONFIG")/openrouter.key
 
 # Writes the config and the shared key once; a re-run keeps them, asks nothing.
 cmd_init() {
-  [[ ! -e $CONFIG ]] || { echo "config gardée : $CONFIG"; return; }
+  [[ ! -e $CONFIG ]] || { t "config kept: $CONFIG" "config gardée : $CONFIG"; return; }
   local allow key honcho=true
-  ask allow "Ton ID Discord (Discord > Mode développeur > clic droit sur toi > Copier l'identifiant) :"
+  # First question, bilingual; USINE_LANG answers it (tests, scripts).
+  [[ -n ${USINE_LANG:-} ]] || ask UI_LANG "Language / Langue : [1] English  [2] Français  (Enter = 1)"
+  if [[ $UI_LANG == 2 || $UI_LANG == fr ]]; then UI_LANG=fr; else UI_LANG=en; fi
+  ask allow "$(t "Your Discord id (Discord > Developer Mode > right-click yourself > Copy User ID):" \
+    "Ton ID Discord (Discord > Mode développeur > clic droit sur toi > Copier l'identifiant) :")"
   allow=${allow// /}
-  [[ -n $allow ]] || die "a Discord id is needed: only its owner may talk to the agents" 2
+  [[ -n $allow ]] || die "$(t "a Discord id is needed: only its owner may talk to the agents" \
+    "il faut un ID Discord : seul son propriétaire peut parler aux agents")" 2
   check_value discord_allowed_users "$allow"
-  secret key "Clé OpenRouter (mémoire + agents, saisie masquée, Entrée = sans mémoire) :"
+  secret key "$(t "OpenRouter key (memory + agents, hidden, Enter = no memory):" \
+    "Clé OpenRouter (mémoire + agents, saisie masquée, Entrée = sans mémoire) :")"
   [[ -n $key ]] || honcho=false
 
   run mkdir -p "$(dirname "$CONFIG")"
   # Owned by the caller (root on a VPS); readable, it holds no secrets.
   write_file 644 "$EUID" "$CONFIG" <<EOF
 # usine-hermes machine config (no secrets). See usine.example.yaml.
+lang: $UI_LANG
 home_root: /var/lib/usine-hermes
 hermes_version: v2026.9.24
 model_openrouter: z-ai/glm-5.2
@@ -146,7 +185,8 @@ HERMES_DIR=/usr/local/lib/hermes-agent
 ROOT_HERMES_HOME=/root/.hermes
 
 need_root() {
-  [[ $DRY_RUN == 1 || $EUID -eq 0 ]] || die "$1 must run as root (try: sudo usine-hermes $1)"
+  [[ $DRY_RUN == 1 || $EUID -eq 0 ]] ||
+    die "$(t "$1 must run as root (try: sudo usine-hermes $1)" "$1 doit être lancé en root (essaie : sudo usine-hermes $1)")"
 }
 
 need_os() {
@@ -155,7 +195,8 @@ need_os() {
   # shellcheck source=/dev/null
   os=$( . "${USINE_OS_RELEASE:-/etc/os-release}" && echo "${ID:-} ${VERSION_ID:-}" ) || os=unknown
   [[ $os == "ubuntu 24.04" || $os == "debian 12" || $os == "debian 13" ]] ||
-    die "unsupported OS ($os): only Ubuntu 24.04, Debian 12 and Debian 13 are supported"
+    die "$(t "unsupported OS ($os): only Ubuntu 24.04, Debian 12 and Debian 13 are supported" \
+      "OS non pris en charge ($os) : seuls Ubuntu 24.04, Debian 12 et Debian 13 le sont")"
 }
 
 # Commit of a Hermes tag. Annotated tags list their commit as <tag>^{};
@@ -185,11 +226,11 @@ bootstrap_hermes() {
     sha="<sha-of-$tag>"
     echo "# skip installer if git -C $HERMES_DIR rev-parse HEAD is at $sha"
   else
-    sha=$(tag_sha "$tag") || die "cannot resolve Hermes tag $tag"
+    sha=$(tag_sha "$tag") || die "$(t "cannot resolve Hermes tag $tag" "impossible de résoudre le tag Hermes $tag")"
   fi
 
   if [[ $DRY_RUN == 0 && $(git -C "$HERMES_DIR" rev-parse HEAD 2>/dev/null) == "$sha" ]]; then
-    echo "Hermes $tag already installed ($sha), skipping installer"
+    t "Hermes $tag already installed ($sha), skipping installer" "Hermes $tag déjà installé ($sha), installeur ignoré"
   else
     [[ $DRY_RUN == 1 ]] || installer=$(mktemp)
     # By commit, not tag: a moved tag cannot swap the installer we run.
@@ -203,7 +244,8 @@ bootstrap_hermes() {
 
   uv=$ROOT_HERMES_HOME/bin/uv
   [[ $DRY_RUN == 1 ]] || uv=$(find_uv) ||
-    die "uv not found after the Hermes install (looked in $ROOT_HERMES_HOME/bin, /root/.local/bin, /usr/local/bin, PATH)"
+    die "$(t "uv not found after the Hermes install (looked in $ROOT_HERMES_HOME/bin, /root/.local/bin, /usr/local/bin, PATH)" \
+      "uv introuvable après l'installation de Hermes (cherché dans $ROOT_HERMES_HOME/bin, /root/.local/bin, /usr/local/bin, PATH)")"
   # Discord + Honcho client deps are lazy upstream (installed into the venv on
   # first use); root pre-bakes them so profiles never write here. Locked, so a
   # re-run changes nothing. Inferred from upstream's Dockerfile. The honcho
@@ -222,7 +264,7 @@ HONCHO_DIR=/opt/usine-hermes/honcho
 # Docker from Docker's official apt repo (compose v2.24+ needed by Honcho).
 bootstrap_docker() {
   if [[ $DRY_RUN == 0 ]] && docker compose version >/dev/null 2>&1; then
-    echo "Docker with compose already installed"
+    t "Docker with compose already installed" "Docker avec compose déjà installé"
   else
     local id="<os-id>" codename="<codename>" arch="<arch>"
     if [[ $DRY_RUN == 0 ]]; then
@@ -251,7 +293,9 @@ bootstrap_honcho() {
   [[ -n $pw ]] || pw=$(od -An -tx1 -N24 /dev/urandom | tr -d ' \n')
   [[ ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
   [[ $DRY_RUN == 0 ]] || echo "# Honcho key: $KEY_FILE"
-  [[ -n $key || $DRY_RUN == 1 ]] || die "Honcho needs the OpenRouter key in $KEY_FILE (or set honcho: false)"
+  [[ -n $key || $DRY_RUN == 1 ]] ||
+    die "$(t "Honcho needs the OpenRouter key in $KEY_FILE (or set honcho: false)" \
+      "Honcho a besoin de la clé OpenRouter dans $KEY_FILE (ou mets honcho: false)")"
 
   run install -d -m 700 "$HONCHO_DIR"
   run install -m 644 "$TEMPLATES/honcho-compose.yml" "$HONCHO_DIR/docker-compose.yml"
@@ -277,10 +321,11 @@ bootstrap_honcho() {
     return
   fi
   for ((i = 0; i < 90; i++)); do
-    curl -fsS "$url" >/dev/null 2>&1 && { echo "Honcho healthy"; return; }
+    curl -fsS "$url" >/dev/null 2>&1 && { t "Honcho healthy" "Honcho opérationnel"; return; }
     sleep 2
   done
-  die "Honcho not healthy after 180s (see: docker compose -f $HONCHO_DIR/docker-compose.yml logs)"
+  die "$(t "Honcho not healthy after 180s (see: docker compose -f $HONCHO_DIR/docker-compose.yml logs)" \
+    "Honcho pas opérationnel après 180 s (voir : docker compose -f $HONCHO_DIR/docker-compose.yml logs)")"
 }
 
 cmd_bootstrap() {
@@ -293,7 +338,7 @@ cmd_bootstrap() {
     bootstrap_docker
     bootstrap_honcho
   fi
-  echo "bootstrap done"
+  t "bootstrap done" "bootstrap terminé"
 }
 
 # Repo checkout first (tests, ./bin/usine-hermes), then the install.sh location.
@@ -330,7 +375,7 @@ env_get() {
 REGISTRY=$(dirname "$CONFIG")/profiles
 
 need_managed() {
-  [[ -f $REGISTRY/$1 ]] || die "$1 is not a managed profile"
+  [[ -f $REGISTRY/$1 ]] || die "$(t "$1 is not a managed profile" "$1 n'est pas un profil géré")"
 }
 
 # Managed profile names, one per line.
@@ -387,15 +432,22 @@ as_profile() {
 sub_warning() {
   case $1 in
     claude-subscription-directsdk-experimental)
-      echo "Claude subscription runs through Hermes' experimental claude-subscription-directsdk plugin:"
-      echo "it may break on upgrades, bills your Agent SDK allowance (~1.7x a normal session),"
-      echo "needs a Max plan plus extra-usage credits, and refuses ANTHROPIC_* variables in .env." ;;
+      t "Claude subscription runs through Hermes' experimental claude-subscription-directsdk plugin:
+it may break on upgrades, bills your Agent SDK allowance (~1.7x a normal session),
+needs a Max plan plus extra-usage credits, and refuses ANTHROPIC_* variables in .env." \
+        "L'abonnement Claude passe par le plugin expérimental claude-subscription-directsdk de Hermes :
+il peut casser aux mises à jour, consomme ton quota Agent SDK (~1,7x une session normale),
+exige un plan Max avec des crédits d'usage supplémentaires, et refuse les variables ANTHROPIC_* dans .env." ;;
     openai-codex)
-      echo "ChatGPT subscription (openai-codex): the plan quota for agent use is undocumented;"
-      echo "a busy bot may hit limits without notice." ;;
+      t "ChatGPT subscription (openai-codex): the plan quota for agent use is undocumented;
+a busy bot may hit limits without notice." \
+        "Abonnement ChatGPT (openai-codex) : le quota du plan pour un agent n'est pas documenté ;
+un bot très actif peut atteindre la limite sans prévenir." ;;
     xai-oauth)
-      echo "SuperGrok subscription (xai-oauth): some SuperGrok tiers answer 403;"
-      echo "check your plan if the bot only gets refusals." ;;
+      t "SuperGrok subscription (xai-oauth): some SuperGrok tiers answer 403;
+check your plan if the bot only gets refusals." \
+        "Abonnement SuperGrok (xai-oauth) : certaines formules SuperGrok répondent 403 ;
+vérifie ta formule si le bot ne reçoit que des refus." ;;
   esac
 }
 
@@ -424,7 +476,7 @@ check_token() {
   local other
   for other in $(profiles); do
     [[ $other != "$1" && $(token_of "$other") == "$2" ]] &&
-      die "$1: Discord token already used by $other"
+      die "$(t "$1: Discord token already used by $other" "$1 : token Discord déjà utilisé par $other")"
   done
   return 0
 }
@@ -450,48 +502,51 @@ cmd_create() {
   while [[ $# -gt 0 ]]; do
     case $1 in
       --personality | --mission | --provider | --preset)
-        [[ $# -ge 2 ]] || die "$1 needs a value" 2
+        [[ $# -ge 2 ]] || die "$(t "$1 needs a value" "$1 attend une valeur")" 2
         printf -v "${1#--}" '%s' "$2"
         shift 2
         ;;
-      *) die "unknown flag: $1" 2 ;;
+      *) die "$(t "unknown flag: $1" "option inconnue : $1")" 2 ;;
     esac
   done
   # The preset brings its own SOUL.md: nothing to ask.
   case $preset in
     "") ;;
     vulcain) personality=preset mission=preset label=Vulcain ;;
-    *) die "unknown preset: $preset (only: vulcain)" 2 ;;
+    *) die "$(t "unknown preset: $preset (only: vulcain)" "preset inconnu : $preset (seul : vulcain)")" 2 ;;
   esac
   need_root create
   home=$(home_of "$name") hermes_home=$(home_of "$name")/.hermes unit=$(unit_of "$name")
   [[ ! -f $REGISTRY/$name ]] ||
-    die "$name is already managed (maybe a failed create); to recreate it run: usine-hermes destroy $name"
-  ! id -u "$name" >/dev/null 2>&1 || die "refusing: $name is an existing non-managed Linux user"
+    die "$(t "$name is already managed (maybe a failed create); to recreate it run: usine-hermes destroy $name" \
+      "$name est déjà géré (peut-être un create raté) ; pour le recréer : usine-hermes destroy $name")"
+  ! id -u "$name" >/dev/null 2>&1 ||
+    die "$(t "refusing: $name is an existing non-managed Linux user" "refusé : $name est un utilisateur Linux existant non géré")"
 
   # --mission and no TTY (Vulcain's bridge, a script): never prompt; secrets
   # left empty are set afterwards with `usine-hermes secret`.
   local batch=0
   [[ -n $mission && ! -t 0 ]] && batch=1
   provider=${provider:-openrouter}
-  [[ " $PROVIDERS " == *" $provider "* ]] || die "unknown provider: $provider" 2
+  [[ " $PROVIDERS " == *" $provider "* ]] || die "$(t "unknown provider: $provider" "fournisseur inconnu : $provider")" 2
   local key_name login=n key="" token=""
   key_name=$(key_var "$provider")
-  [[ -n $mission || $batch == 1 ]] || ask mission "Que doit faire $name ? (une phrase) :"
+  [[ -n $mission || $batch == 1 ]] || ask mission "$(t "What should $name do? (one sentence):" "Que doit faire $name ? (une phrase) :")"
   personality=${personality:-helpful, concise and friendly}
   mission=${mission:-help the operator with day-to-day tasks}
   # The shared key (stored at init) is the default OpenRouter key.
   [[ $provider != openrouter || ! -r $KEY_FILE ]] || key=$(<"$KEY_FILE")
   if [[ -z $key_name ]]; then
     sub_warning "$provider" >&2
-    echo "The login runs as Linux user $name; its tokens stay in $home." >&2
-    [[ $batch == 1 ]] || ask login "Se connecter maintenant ? [o/N]"
+    t "The login runs as Linux user $name; its tokens stay in $home." \
+      "La connexion se fait en tant qu'utilisateur Linux $name ; ses jetons restent dans $home." >&2
+    [[ $batch == 1 ]] || ask login "$(t "Log in now? [y/N]" "Se connecter maintenant ? [o/N]")"
   fi
 
   # Secrets first so a cancelled prompt leaves nothing half-created.
   if [[ $batch == 0 ]]; then
-    [[ -z $key_name || -n $key ]] || secret key "$key_name pour $name (saisie masquée) :"
-    secret token "Token du bot Discord $(of "$label") (Entrée = plus tard) :"
+    [[ -z $key_name || -n $key ]] || secret key "$(t "$key_name for $name (hidden):" "$key_name pour $name (saisie masquée) :")"
+    secret token "$(t "Discord bot token for $label (Enter = later):" "Token du bot Discord $(of "$label") (Entrée = plus tard) :")"
     [[ -z $token ]] || check_token "$name" "$token"
   fi
 
@@ -543,16 +598,17 @@ cmd_create() {
   elif [[ $login == [oOyY]* ]]; then
     sub_login "$name" "$provider"
   else
-    echo "Connexion à faire plus tard, en root :"
+    t "Log in later, as root:" "Connexion à faire plus tard, en root :"
     DRY_RUN=1 sub_login "$name" "$provider" | sed 's/^+ /  sudo /'
   fi
-  [[ -n $key_name && -z $key ]] && echo "Clé à saisir : sudo usine-hermes secret $name $key_name"
+  [[ -n $key_name && -z $key ]] &&
+    t "Key to set: sudo usine-hermes secret $name $key_name" "Clé à saisir : sudo usine-hermes secret $name $key_name"
   if [[ -n $token ]]; then
     run systemctl enable --now "$unit"
-    if [[ -n $preset ]]; then echo "✓ Vulcain est en ligne : parle-lui sur Discord."
-    else echo "✓ $name créée et démarrée. Mentionne @$name sur Discord."; fi
+    if [[ -n $preset ]]; then t "✓ Vulcain is online: talk to it on Discord." "✓ Vulcain est en ligne : parle-lui sur Discord."
+    else t "✓ $name created and started. Mention @$name on Discord." "✓ $name créée et démarrée. Mentionne @$name sur Discord."; fi
   else
-    echo "✓ $name créée. Quand tu as le token du bot, il démarre avec :"
+    t "✓ $name created. Once you have the bot token, it starts with:" "✓ $name créée. Quand tu as le token du bot, il démarre avec :"
     echo "  sudo usine-hermes secret $name"
   fi
 }
@@ -562,7 +618,7 @@ cmd_start() {
   need_root start
   need_managed "$name"
   token=$(token_of "$name")
-  [[ -n $token ]] || die "$name: DISCORD_BOT_TOKEN is empty in $(env_file "$name")"
+  [[ -n $token ]] || die "$(t "$name: DISCORD_BOT_TOKEN is empty in $(env_file "$name")" "$name : DISCORD_BOT_TOKEN est vide dans $(env_file "$name")")"
   check_token "$name" "$token"
   run systemctl enable --now "$(unit_of "$name")"
 }
@@ -594,13 +650,14 @@ cmd_secret() {
   local name=$1 key=${2:-DISCORD_BOT_TOKEN} unit
   need_managed "$name"
   grep -qxF -- "$key" <(secret_keys "$name") ||
-    die "unknown key: '$key' (allowed: $(secret_keys "$name" | paste -sd' ' -))" 2
+    die "$(t "unknown key: '$key' (allowed: $(secret_keys "$name" | paste -sd' ' -))" \
+      "clé inconnue : '$key' (autorisées : $(secret_keys "$name" | paste -sd' ' -))")" 2
   need_root secret
   local env value old new
   env=$(env_file "$name") unit=$(unit_of "$name")
-  if [[ $# -eq 1 ]]; then secret value "Token du bot Discord $(of "$name") :"
-  else secret value "$key pour $name (saisie masquée) :"; fi
-  [[ -n $value ]] || die "empty value, $key unchanged"
+  if [[ $# -eq 1 ]]; then secret value "$(t "Discord bot token for $name:" "Token du bot Discord $(of "$name") :")"
+  else secret value "$(t "$key for $name (hidden):" "$key pour $name (saisie masquée) :")"; fi
+  [[ -n $value ]] || die "$(t "empty value, $key unchanged" "valeur vide, $key inchangée")"
   [[ $key != DISCORD_BOT_TOKEN ]] || check_token "$name" "$value"
   # Read as the profile: a planted link cannot make root copy another file.
   if [[ $DRY_RUN == 1 ]]; then old=$(cat "$env" 2>/dev/null) || old=
@@ -611,12 +668,12 @@ cmd_secret() {
   new=${new#$'\n'}
   [[ $DRY_RUN == 0 ]] || echo "# .env keys: $(cut -d= -f1 <<<"$new" | paste -sd' ' -)"
   printf '%s\n' "$new" | write_file 600 "$name:$name" "$env" secret
-  echo "$key set for $name"
+  t "$key set for $name" "$key enregistrée pour $name"
   if systemctl is-active "$unit" >/dev/null 2>&1; then
-    echo "$name is running: apply with sudo usine-hermes restart $name"
+    t "$name is running: apply with sudo usine-hermes restart $name" "$name tourne : applique avec sudo usine-hermes restart $name"
   elif [[ $# -eq 1 ]]; then
     run systemctl enable --now "$unit"
-    echo "✓ $name démarrée. Mentionne @$name sur Discord."
+    t "✓ $name started. Mention @$name on Discord." "✓ $name démarrée. Mentionne @$name sur Discord."
   fi
 }
 
@@ -630,10 +687,10 @@ cmd_logs() {
   local name=$1 lines=100
   shift
   if [[ ${1:-} == -n ]]; then
-    [[ ${2:-} =~ ^[0-9]+$ ]] || die "logs: -n needs a number" 2
+    [[ ${2:-} =~ ^[0-9]+$ ]] || die "$(t "logs: -n needs a number" "logs : -n attend un nombre")" 2
     lines=$2
   elif [[ $# -gt 0 ]]; then
-    die "unknown flag: $1" 2
+    die "$(t "unknown flag: $1" "option inconnue : $1")" 2
   fi
   need_managed "$name"
   if [[ $DRY_RUN == 1 ]]; then
@@ -658,12 +715,13 @@ cmd_destroy() {
   home=$(home_of "$name") unit=$(unit_of "$name")
   if id -u "$name" >/dev/null 2>&1; then
     [[ $(getent passwd "$name" | cut -d: -f6) == "$home" ]] ||
-      die "refusing: Linux user $name does not live in $home"
+      die "$(t "refusing: Linux user $name does not live in $home" "refusé : l'utilisateur Linux $name ne vit pas dans $home")"
     user=1
   fi
-  printf 'Type %s to delete its unit, Linux user and home: ' "$name" >&2
+  printf '%s ' "$(t "Type $name to delete its unit, Linux user and home:" \
+    "Tape $name pour supprimer son unité, son utilisateur Linux et son dossier :")" >&2
   read -r typed || true
-  [[ $typed == "$name" ]] || die "aborted"
+  [[ $typed == "$name" ]] || die "$(t "aborted" "annulé")"
 
   run systemctl disable --now "$unit" || true
   run rm -f "/etc/systemd/system/$unit"
@@ -673,7 +731,7 @@ cmd_destroy() {
   if [[ $user == 1 || $DRY_RUN == 1 ]]; then run userdel "$name"; fi
   run rm -rf "$home"
   run rm -f "$REGISTRY/$name"
-  echo "destroyed $name"
+  t "destroyed $name" "$name supprimé"
 }
 
 # Bridge for the Vulcain preset, run by sudo (one sudoers rule). Re-validates
@@ -781,7 +839,7 @@ cmd_doctor() {
       verdict "$profile cannot-read-$other" cannot_read "$profile" "$other"
     done
   done
-  [[ $failed == 0 ]] || die "doctor: some checks failed"
+  [[ $failed == 0 ]] || die "$(t "doctor: some checks failed" "doctor : des vérifications ont échoué")"
 }
 
 main() {
@@ -819,7 +877,7 @@ main() {
       [[ -z ${1:-} ]] || check_name "$1"
       cmd_doctor "${1:-}"
       ;;
-    *) die "unknown command: $cmd (see 'usine-hermes help')" 2 ;;
+    *) die "$(t "unknown command: $cmd (see 'usine-hermes help')" "commande inconnue : $cmd (voir 'usine-hermes help')")" 2 ;;
   esac
 }
 

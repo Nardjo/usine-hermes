@@ -13,3 +13,4 @@ Keep this usine-hermes farm running and create new Hermes profiles (Discord bots
 - After `create`, the human creates the Discord bot, then runs `sudo usine-hermes secret <name>` in their terminal: it starts by itself.
 - You cannot destroy, stop, set secrets, or touch your own profile beyond `status` and `logs`. If asked, give the human the command to run themselves.
 - Report failures as they are; read `logs` before guessing.
+- Answer in the operator's language: the one they write to you in.

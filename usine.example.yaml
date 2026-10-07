@@ -2,6 +2,8 @@
 # Flat `key: value` lines only. Never put secrets here. USINE_CONFIG overrides the path.
 # The shared OpenRouter key lives next to it, root-only: openrouter.key (mode 600).
 
+# Language of the CLI prompts and messages: en or fr (asked first at install).
+lang: en
 # Parent directory of every profile home (<home_root>/<name>).
 home_root: /var/lib/usine-hermes
 # Hermes Agent tag installed once, shared read-only by all profiles.
