@@ -466,6 +466,12 @@ mem() { lc memory "$1" --dry-run; }
 expect "memory: key stored root 600" 0 "write $tmp/openrouter\.key \(mode 600, owner root:root\)" -- mem vul
 expect "memory: config honcho true" 0 "^\| honcho: true$" -- mem vul
 expect "memory: Docker + Honcho up" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- mem vul
+# Run by the human with no name: asks the OpenRouter key hidden, never prints it.
+rm -f "$tmp/openrouter.key"
+expect "memory (human): asks the key" 0 "Clé OpenRouter pour la mémoire" -- env USINE_LANG=fr USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" memory --dry-run <<<"sk-or-human-123"
+expect "memory (human): key stored root 600" 0 "write $tmp/openrouter\.key \(mode 600, owner root:root\)" -- lc memory --dry-run <<<"sk-or-human-123"
+if lc memory --dry-run <<<"sk-or-human-123" 2>&1 | grep -c >/dev/null "sk-or-human"; then ko "memory (human): key never printed"; else ok "memory (human): key never printed"; fi
+expect "help: memory command listed" 0 "^  memory  " -- "$cli" help
 expect "memory: every profile wired" 0 "write $hr/delta/\.hermes/honcho\.json" -- mem vul
 expect "memory: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- mem vul
 if mem vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "memory: key never printed"; else ok "memory: key never printed"; fi
