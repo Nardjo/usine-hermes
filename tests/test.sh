@@ -124,6 +124,9 @@ expect "bootstrap: skip when at pinned sha" 0 \
   "skip.*/usr/local/lib/hermes-agent.*at <sha-of-v2026\.9\.24>" -- bs
 expect "bootstrap: pre-bakes Discord + Honcho deps" 0 \
   "uv sync --extra all --extra messaging --extra honcho --locked" -- bs
+expect "bootstrap: Lightpanda pinned release" 0 "curl -fsSL -o /tmp/lightpanda\.download https://github\.com/lightpanda-io/browser/releases/download/1\.0\.0/lightpanda-x86_64-linux$" -- bs
+expect "bootstrap: Lightpanda sha256 checked" 0 "^# check sha256 aa5a4b8ed53d1e38b3c73f5b2647d0a84a82e6744557f45f9a9c85858aa031c3$" -- bs
+expect "bootstrap: Lightpanda shared binary" 0 "install -m 755 /tmp/lightpanda\.download /usr/local/bin/lightpanda$" -- bs
 expect "bootstrap: shared install root-owned" 0 "chown -R root:root /usr/local/lib/hermes-agent" -- bs
 expect "bootstrap: shared install not writable by others" 0 "chmod -R go-w /usr/local/lib/hermes-agent" -- bs
 if [[ $EUID -ne 0 ]]; then
@@ -194,6 +197,9 @@ expect "create: default model terra" 0 "hermes config set model\.default gpt-5\.
 asked=$(cd0 2>&1 >/dev/null <<<$'w\nn\n' | grep -oE "What should alice do\?|Log in now\? \[y/N\]|Discord bot token for alice" | paste -sd'|' -)
 if [[ $asked == "What should alice do?|Log in now? [y/N]|Discord bot token for alice" ]]; then ok "create: default asks mission, login, token"; else ko "create: default asks mission, login, token: $asked"; fi
 expect "create: default login as the profile on y" 0 "^\+ runuser -u alice -- .*hermes auth add openai-codex$" -- cd0 <<<$'w\ny\n'
+expect "create: Lightpanda MCP as the profile" 0 "runuser -u alice -- .*hermes config set --force mcp_servers\.lightpanda\.command /usr/local/bin/lightpanda$" -- cd0 <<<$'w\nn\n'
+expect "create: Lightpanda MCP over stdio" 0 'mcp_servers\.lightpanda\.args \\?\[\\?"mcp\\?"\\?\]$' -- cd0 <<<$'w\nn\n'
+expect "create: Lightpanda telemetry off" 0 "mcp_servers\.lightpanda\.env\.LIGHTPANDA_DISABLE_TELEMETRY .{0,2}\"true.{0,3}$" -- cd0 <<<$'w\nn\n'
 expect "create: tool calls hidden as the profile" 0 "runuser -u alice -- .*hermes config set --force display\.tool_progress off$" -- cd0 <<<$'w\nn\n'
 expect "create: reasoning medium as the profile" 0 "runuser -u alice -- .*hermes config set --force agent\.reasoning_effort medium$" -- cd0 <<<$'w\nn\n'
 expect "create: mission in SOUL.md" 0 "^\| watch prices$" -- cs alice <<<$'watch prices\n'
@@ -506,7 +512,7 @@ if tr vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "treg: token never pri
 expect "treg: needs a captured token" 1 "no pending secret" -- tr delta
 expect "treg: asks it hidden from a shell" 0 "treg team token \(hidden\):" -- env USINE_LANG=en USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" treg --dry-run <<<treg-secret-token
 expect "treg: empty token refused" 1 "empty" -- lc treg --dry-run </dev/null
-if cr ab --mission m 2>&1 | grep -c >/dev/null mcp_servers; then ko "create: no treg token, no MCP"; else ok "create: no treg token, no MCP"; fi
+if cr ab --mission m 2>&1 | grep -c >/dev/null mcp_servers\.treg; then ko "create: no treg token, no MCP"; else ok "create: no treg token, no MCP"; fi
 echo treg-secret-token >"$tmp/ex/treg.token"
 expect "create: treg wired when the token exists" 0 "runuser -u ab -- .*mcp_servers\.treg\.url https://treg\.to/mcp/$" -- cr ab --mission m
 if cr ab --mission m 2>&1 | grep -c >/dev/null "treg-secret"; then ko "create: treg token never printed"; else ok "create: treg token never printed"; fi

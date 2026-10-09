@@ -261,6 +261,36 @@ bootstrap_hermes() {
   [[ $uv == /usr/local/bin/uv ]] || run install -m 755 "$uv" /usr/local/bin/uv
 }
 
+# Lightpanda headless browser, pinned by version and sha256 (GitHub asset
+# digests of the release), shared read-only by every profile.
+LIGHTPANDA_VERSION=1.0.0
+LIGHTPANDA_BIN=/usr/local/bin/lightpanda
+
+lightpanda_sha() {
+  case $1 in
+    x86_64) echo aa5a4b8ed53d1e38b3c73f5b2647d0a84a82e6744557f45f9a9c85858aa031c3 ;;
+    aarch64) echo 69791924bcee43b13b224af4c845622c5fe66fdbc1b8143bfaa39ca8f85244f5 ;;
+  esac
+}
+
+bootstrap_lightpanda() {
+  local arch=x86_64 sha tmp=/tmp/lightpanda.download
+  [[ $DRY_RUN == 1 ]] || arch=$(uname -m)
+  if [[ $DRY_RUN == 0 && $("$LIGHTPANDA_BIN" version 2>/dev/null) == "$LIGHTPANDA_VERSION" ]]; then
+    t "Lightpanda $LIGHTPANDA_VERSION already installed" "Lightpanda $LIGHTPANDA_VERSION déjà installé"
+    return
+  fi
+  sha=$(lightpanda_sha "$arch")
+  [[ -n $sha ]] || die "$(t "no Lightpanda build for $arch" "pas de Lightpanda pour $arch")"
+  [[ $DRY_RUN == 1 ]] || tmp=$(mktemp)
+  run curl -fsSL -o "$tmp" \
+    "https://github.com/lightpanda-io/browser/releases/download/$LIGHTPANDA_VERSION/lightpanda-$arch-linux"
+  if [[ $DRY_RUN == 1 ]]; then echo "# check sha256 $sha"
+  else echo "$sha  $tmp" | sha256sum -c --quiet || die "$(t "Lightpanda checksum mismatch" "checksum Lightpanda invalide")"; fi
+  run install -m 755 "$tmp" "$LIGHTPANDA_BIN"
+  run rm -f "$tmp"
+}
+
 HONCHO_DIR=/opt/usine-hermes/honcho
 
 # Docker from Docker's official apt repo (compose v2.24+ needed by Honcho).
@@ -336,6 +366,7 @@ cmd_bootstrap() {
   run apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y git curl tar coreutils ca-certificates
   bootstrap_hermes
+  bootstrap_lightpanda
   if [[ $(cfg honcho) == true ]]; then
     bootstrap_docker
     bootstrap_honcho
@@ -538,6 +569,16 @@ wire_honcho() {
   as_profile "$name" hermes config set memory.provider honcho
 }
 
+# Lightpanda for one profile: a stdio MCP server Hermes starts with the
+# gateway or chat (~17 MB idle), giving it browsing tools. No telemetry.
+wire_lightpanda() {
+  as_profile "$1" hermes config set --force mcp_servers.lightpanda.command "$LIGHTPANDA_BIN"
+  as_profile "$1" hermes config set --force mcp_servers.lightpanda.args '["mcp"]'
+  # JSON string: a bare true becomes a YAML bool, which MCP env refuses.
+  # Lightpanda only checks that the variable exists.
+  as_profile "$1" hermes config set --force mcp_servers.lightpanda.env.LIGHTPANDA_DISABLE_TELEMETRY '"true"'
+}
+
 # treg for one profile: the team token in its .env, read by the MCP header.
 wire_treg() {
   local token=""
@@ -637,6 +678,7 @@ cmd_create() {
   # auto-thread free-response channels); elsewhere, mention only.
   [[ -z $channel ]] || env_set "$name" DISCORD_FREE_RESPONSE_CHANNELS "$channel"
   [[ ! -r $TREG_FILE ]] || wire_treg "$name"
+  wire_lightpanda "$name"
 
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
