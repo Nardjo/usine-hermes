@@ -608,6 +608,8 @@ cmd_create() {
   fi
   # What /reasoning medium --global saves; --force: `config set` does not list it.
   as_profile "$name" hermes config set --force agent.reasoning_effort medium
+  # No tool-call lines, in the terminal chat and on Discord.
+  as_profile "$name" hermes config set --force display.tool_progress off
   [[ $(cfg honcho) != true ]] || wire_honcho "$name"
 
   # printf is a builtin: secrets never reach a process argv. No key line for

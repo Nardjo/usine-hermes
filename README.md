@@ -129,7 +129,7 @@ Never reuse a token across profiles: two gateways on one bot fight each other (`
 
 ## Providers
 
-`usine-hermes model <name>` offers all of them (menu above); `create` uses `openai-codex` (ChatGPT subscription, `gpt-5.6-terra`) unless `--provider <id>`. Every profile, Vulcain included, is created with `agent.reasoning_effort: medium` (what `/reasoning medium --global` saves):
+`usine-hermes model <name>` offers all of them (menu above); `create` uses `openai-codex` (ChatGPT subscription, `gpt-5.6-terra`) unless `--provider <id>`. Every profile, Vulcain included, is created with `agent.reasoning_effort: medium` (what `/reasoning medium --global` saves) and `display.tool_progress: off` (no tool-call lines in the terminal chat or on Discord; `hermes config set display.tool_progress all` as the profile brings them back):
 
 | Id | Auth | Default model | Limits |
 |---|---|---|---|

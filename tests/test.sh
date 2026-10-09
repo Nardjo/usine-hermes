@@ -194,6 +194,7 @@ expect "create: default model terra" 0 "hermes config set model\.default gpt-5\.
 asked=$(cd0 2>&1 >/dev/null <<<$'w\nn\n' | grep -oE "What should alice do\?|Log in now\? \[y/N\]|Discord bot token for alice" | paste -sd'|' -)
 if [[ $asked == "What should alice do?|Log in now? [y/N]|Discord bot token for alice" ]]; then ok "create: default asks mission, login, token"; else ko "create: default asks mission, login, token: $asked"; fi
 expect "create: default login as the profile on y" 0 "^\+ runuser -u alice -- .*hermes auth add openai-codex$" -- cd0 <<<$'w\ny\n'
+expect "create: tool calls hidden as the profile" 0 "runuser -u alice -- .*hermes config set --force display\.tool_progress off$" -- cd0 <<<$'w\nn\n'
 expect "create: reasoning medium as the profile" 0 "runuser -u alice -- .*hermes config set --force agent\.reasoning_effort medium$" -- cd0 <<<$'w\nn\n'
 expect "create: mission in SOUL.md" 0 "^\| watch prices$" -- cs alice <<<$'watch prices\n'
 expect "create: default personality in SOUL.md" 0 "^\| helpful, concise and friendly$" -- cs alice <<<$'watch prices\n'
