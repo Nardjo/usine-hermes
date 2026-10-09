@@ -451,8 +451,8 @@ expect "bridge: take-secret needs a key" 2 "usage" -- br take-secret delta
 expect "bridge: take-secret extra args refused" 2 "usage" -- br take-secret delta DISCORD_BOT_TOKEN x
 expect "bridge: take-secret bad name" 2 "invalid name" -- br take-secret Bad DISCORD_BOT_TOKEN
 expect "bridge: take-secret unmanaged target" 1 "not a managed profile" -- br take-secret stranger DISCORD_BOT_TOKEN
-expect "bridge: channel of another profile" 0 "usine-hermes channel delta 123456789012345678$" -- br channel delta 123456789012345678
-expect "bridge: channel of itself allowed" 0 "usine-hermes channel vul 123456789012345678$" -- br channel vul 123456789012345678
+expect "bridge: channel of another profile" 0 "usine-hermes channel delta 123456789012345678 vul$" -- br channel delta 123456789012345678
+expect "bridge: channel of itself allowed, caller last" 0 "usine-hermes channel vul 123456789012345678 vul$" -- br channel vul 123456789012345678
 expect "bridge: channel digits only" 2 "invalid channel" -- br channel delta general
 expect "bridge: channel needs an id" 2 "usage" -- br channel delta
 expect "bridge: create --channel passed through" 0 "usine-hermes create newbie --mission m --channel 123456789012345678$" -- bc --mission m --channel 123456789012345678
@@ -461,6 +461,8 @@ expect "bridge: create --channel digits only" 2 "invalid channel" -- bc --missio
 expect "channel: written to the profile .env" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY DISCORD_FREE_RESPONSE_CHANNELS$" -- lc channel delta 123456789012345678 --dry-run
 expect "channel: restarts it if running" 0 "systemctl try-restart usine-delta\.service" -- lc channel delta 123456789012345678 --dry-run
 expect "channel: digits only" 2 "invalid channel" -- lc channel delta general --dry-run
+expect "channel: the caller is only told to restart" 0 "delta tourne : applique avec sudo usine-hermes restart delta|delta is running: apply with sudo usine-hermes restart delta" -- lc channel delta 123456789012345678 delta --dry-run
+if lc channel delta 123456789012345678 delta --dry-run 2>&1 | grep -c >/dev/null "try-restart"; then ko "channel: never restarts the caller"; else ok "channel: never restarts the caller"; fi
 expect "channel: unmanaged profile refused" 1 "not a managed profile" -- lc channel stranger 123456789012345678 --dry-run
 expect "bridge: allow ids" 0 "usine-hermes allow 123\\\\?,456$" -- br allow 123,456
 expect "bridge: allow rejects non-digits" 2 "invalid discord_allowed_users" -- br allow "1;2"

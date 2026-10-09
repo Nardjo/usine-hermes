@@ -284,9 +284,11 @@ bootstrap_lightpanda() {
   [[ -n $sha ]] || die "$(t "no Lightpanda build for $arch" "pas de Lightpanda pour $arch")"
   [[ $DRY_RUN == 1 ]] || tmp=$(mktemp)
   run curl -fsSL -o "$tmp" \
-    "https://github.com/lightpanda-io/browser/releases/download/$LIGHTPANDA_VERSION/lightpanda-$arch-linux"
+    "https://github.com/lightpanda-io/browser/releases/download/$LIGHTPANDA_VERSION/lightpanda-$arch-linux" ||
+    { rm -f "$tmp"; die "$(t "cannot download Lightpanda" "impossible de télécharger Lightpanda")"; }
   if [[ $DRY_RUN == 1 ]]; then echo "# check sha256 $sha"
-  else echo "$sha  $tmp" | sha256sum -c --quiet || die "$(t "Lightpanda checksum mismatch" "checksum Lightpanda invalide")"; fi
+  else echo "$sha  $tmp" | sha256sum -c --quiet ||
+    { rm -f "$tmp"; die "$(t "Lightpanda checksum mismatch" "checksum Lightpanda invalide")"; }; fi
   run install -m 755 "$tmp" "$LIGHTPANDA_BIN"
   run rm -f "$tmp"
 }
@@ -678,7 +680,8 @@ cmd_create() {
   # auto-thread free-response channels); elsewhere, mention only.
   [[ -z $channel ]] || env_set "$name" DISCORD_FREE_RESPONSE_CHANNELS "$channel"
   [[ ! -r $TREG_FILE ]] || wire_treg "$name"
-  wire_lightpanda "$name"
+  # A VPS bootstrapped before Lightpanda has no binary: re-run bootstrap first.
+  [[ $DRY_RUN == 0 && ! -x $LIGHTPANDA_BIN ]] || wire_lightpanda "$name"
 
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
@@ -840,14 +843,19 @@ cfg_set() {
 
 # channel <name> <id>: the profile's own Discord channel (no mention needed
 # there, inline replies), applied by a restart if it runs.
+# [from] is the bridge caller: it is never restarted mid-turn, only told how.
 cmd_channel() {
-  local name=$1 id=${2:-}
+  local name=$1 id=${2:-} from=${3:-}
   need_root channel
   need_managed "$name"
   check_value channel "$id"
   env_set "$name" DISCORD_FREE_RESPONSE_CHANNELS "$id"
-  run systemctl try-restart "$(unit_of "$name")"
   t "✓ $name answers without a mention in channel $id." "✓ $name répond sans mention dans le salon $id."
+  if [[ $name == "$from" ]] && systemctl is-active "$(unit_of "$name")" >/dev/null 2>&1; then
+    t "$name is running: apply with sudo usine-hermes restart $name" "$name tourne : applique avec sudo usine-hermes restart $name"
+  elif [[ $name != "$from" ]]; then
+    run systemctl try-restart "$(unit_of "$name")"
+  fi
 }
 
 # allow <ids>: who may talk to every bot, in the config and every .env.
@@ -863,8 +871,6 @@ cmd_allow() {
   done
 }
 
-# memory <from>: Honcho on, with the OpenRouter key <from> captured (or the
-# stored one), wired into every profile.
 # treg [from]: the treg team token, from <from>'s captured secret (Vulcain)
 # or asked hidden, then wired into every profile.
 cmd_treg() {
@@ -889,6 +895,8 @@ cmd_treg() {
   t "✓ treg tools on for every profile." "✓ Outils treg activés pour chaque profil."
 }
 
+# memory <from>: Honcho on, with the OpenRouter key <from> captured (or the
+# stored one), wired into every profile.
 cmd_memory() {
   local from=$1 key p
   need_root memory
@@ -1092,6 +1100,7 @@ cmd_bridge() {
   run logger -t usine-hermes-bridge "caller=$caller action=$action target=${target:--}"
   # These read the secret the caller captured: the root side needs its name.
   [[ $action != take-secret && $action != memory && $action != treg ]] || set -- "$caller" "$@"
+  [[ $action != channel ]] || set -- "$@" "$caller"
   run systemd-run --wait --pipe --quiet --collect "$BIN" "$action" "$@" </dev/null
 }
 
@@ -1174,7 +1183,10 @@ main() {
     status) cmd_status "$1" ;;
     secret) cmd_secret "$@" ;;
     model) cmd_model "$1" ;;
-    channel) cmd_channel "$1" "${2:-}" ;;
+    channel)
+      [[ -z ${3:-} ]] || check_name "$3"
+      cmd_channel "$1" "${2:-}" "${3:-}"
+      ;;
     take-secret) cmd_take_secret "$1" "$2" "${3:-}" ;;
     allow) cmd_allow "${1:-}" ;;
     memory) cmd_memory "$1" ;;
