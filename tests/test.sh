@@ -493,6 +493,24 @@ expect "memory: every profile wired" 0 "write $hr/delta/\.hermes/honcho\.json" -
 expect "memory: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- mem vul
 if mem vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "memory: key never printed"; else ok "memory: key never printed"; fi
 expect "memory: needs a captured key" 1 "OpenRouter key" -- mem delta
+# treg: the team token (captured by Vulcain, or asked hidden), MCP in every profile.
+tr() { lc treg "$@" --dry-run; }
+expect "bridge: treg runs with the caller" 0 "usine-hermes treg vul$" -- br treg
+expect "bridge: treg takes nothing" 2 "usage" -- br treg delta
+expect "treg: token stored root 600" 0 "write $tmp/treg\.token \(mode 600, owner root:root\)" -- tr vul
+expect "treg: token in every .env" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY MCP_TREG_API_KEY$" -- tr vul
+expect "treg: MCP url as the profile" 0 "runuser -u delta -- .*hermes config set --force mcp_servers\.treg\.url https://treg\.to/mcp/$" -- tr vul
+expect "treg: bearer header from the .env" 0 'mcp_servers\.treg\.headers\.Authorization Bearer\\? \\?\$\\?\{MCP_TREG_API_KEY\\?\}$' -- tr vul
+expect "treg: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- tr vul
+if tr vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "treg: token never printed"; else ok "treg: token never printed"; fi
+expect "treg: needs a captured token" 1 "no pending secret" -- tr delta
+expect "treg: asks it hidden from a shell" 0 "treg team token \(hidden\):" -- env USINE_LANG=en USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" treg --dry-run <<<treg-secret-token
+expect "treg: empty token refused" 1 "empty" -- lc treg --dry-run </dev/null
+if cr ab --mission m 2>&1 | grep -c >/dev/null mcp_servers; then ko "create: no treg token, no MCP"; else ok "create: no treg token, no MCP"; fi
+echo treg-secret-token >"$tmp/ex/treg.token"
+expect "create: treg wired when the token exists" 0 "runuser -u ab -- .*mcp_servers\.treg\.url https://treg\.to/mcp/$" -- cr ab --mission m
+if cr ab --mission m 2>&1 | grep -c >/dev/null "treg-secret"; then ko "create: treg token never printed"; else ok "create: treg token never printed"; fi
+rm -f "$tmp/ex/treg.token"
 if "$cli" help | grep -c >/dev/null bridge; then ko "bridge: hidden from help"; else ok "bridge: hidden from help"; fi
 expect "config reads max_profiles" 0 "^10$" -- env USINE_CONFIG="$root/usine.example.yaml" "$cli" config max_profiles
 

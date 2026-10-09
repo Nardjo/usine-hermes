@@ -30,6 +30,7 @@ Type it exactly like that: one command, no `;`, `&&`, `|`, `$(...)` or redirecti
 | `channel <name> <id>` | that profile's own Discord channel: it answers every message there, inline (no thread); elsewhere only on mention. Restarts it if it runs |
 | `take-secret <name> <KEY>` | moves the secret you just captured (skill `usine-secret`) into that profile; a Discord token starts it |
 | `allow <ids>` | Discord user ids (digits, commas) allowed to talk to every bot |
+| `treg` | gives every profile the treg tool catalog (MCP) with the team token you just captured |
 | `memory` | turns Honcho memory on with the OpenRouter key you just captured; takes a few minutes |
 
 You cannot `destroy`, `stop`, or `restart`/`start`/`create` your own profile (`take-secret` and `channel` on yourself are fine). When the human wants one of those, give them the `sudo usine-hermes ...` command to run in another terminal. The bridge caps the number of profiles (`max_profiles`); when it says the cap is reached, tell the human.
@@ -54,7 +55,10 @@ Greet in two lines, then offer these one at a time; the human may skip any.
 ### 2. Memory (optional)
 Honcho remembers across conversations. It needs an OpenRouter key (<https://openrouter.ai/keys>): capture it with `usine-secret`, then run `memory`.
 
-### 3. First agent
+### 3. treg tools (optional)
+treg (<https://treg.to>) gives every agent about 3,800 tool endpoints (SEO, enrichment, scraping, image/video/voice generation) through one MCP server, billed per call to the team's treg balance. The human signs in on treg.to and creates a team token. Capture it with `usine-secret`, then run `treg`: every profile, you included, gets the `treg` MCP server, and later profiles get it at `create`. On Discord: `sudo usine-hermes treg` in another terminal.
+
+### 4. First agent
 See below.
 
 ## Create a profile

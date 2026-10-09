@@ -21,6 +21,7 @@ Commandes :
   create <nom> [--mission T] [--personality T] [--provider P] [--channel ID] [--preset vulcain]
                        crée un profil isolé ; le démarre si un token est donné
   channel <nom> <ID>   salon Discord du profil : il y répond sans mention, hors thread
+  treg                 outils treg (MCP) pour chaque profil ; demande le token d'équipe (masqué)
   secret <nom> [CLÉ]   définit le token Discord (puis démarre) ou une CLÉ (masquée)
   model <nom>          choisit le modèle : connexion à un abonnement ou clé API
   start <nom>          active et démarre un profil
@@ -49,6 +50,7 @@ Commands:
   create <name> [--mission T] [--personality T] [--provider P] [--channel ID] [--preset vulcain]
                        create an isolated profile; starts it if given a token
   channel <name> <ID>  the profile's Discord channel: answers there without a mention, no thread
+  treg                 treg tools (MCP) for every profile; asks the team token (hidden)
   secret <name> [KEY]  set the Discord token (then start) or one KEY (hidden)
   model <name>         pick the model: subscription login or API key
   start <name>         enable and start a profile
@@ -144,6 +146,8 @@ ask() {
 # OpenRouter key of Honcho memory (and default key of openrouter profiles),
 # root-only next to the config; written by the bridge memory action.
 KEY_FILE=$(dirname "$CONFIG")/openrouter.key
+# treg team token (tool catalog over MCP), root-only next to the config.
+TREG_FILE=$(dirname "$CONFIG")/treg.token
 
 # Writes the config once; a re-run keeps it and asks nothing. The rest
 # (Discord, memory, agents) is set up later by talking to Vulcain.
@@ -534,6 +538,17 @@ wire_honcho() {
   as_profile "$name" hermes config set memory.provider honcho
 }
 
+# treg for one profile: the team token in its .env, read by the MCP header.
+wire_treg() {
+  local token=""
+  [[ ! -r $TREG_FILE ]] || token=$(<"$TREG_FILE")
+  env_set "$1" MCP_TREG_API_KEY "$token"
+  as_profile "$1" hermes config set --force mcp_servers.treg.url https://treg.to/mcp/
+  # Single quotes: Hermes expands ${...} from the .env when it connects.
+  # shellcheck disable=SC2016
+  as_profile "$1" hermes config set --force mcp_servers.treg.headers.Authorization 'Bearer ${MCP_TREG_API_KEY}'
+}
+
 cmd_create() {
   local name=$1 label=$1 personality="" mission="" provider="" preset="" channel="" home hermes_home unit
   shift
@@ -621,6 +636,7 @@ cmd_create() {
   # Its own channel: every message there, answered inline (Hermes does not
   # auto-thread free-response channels); elsewhere, mention only.
   [[ -z $channel ]] || env_set "$name" DISCORD_FREE_RESPONSE_CHANNELS "$channel"
+  [[ ! -r $TREG_FILE ]] || wire_treg "$name"
 
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
@@ -807,6 +823,30 @@ cmd_allow() {
 
 # memory <from>: Honcho on, with the OpenRouter key <from> captured (or the
 # stored one), wired into every profile.
+# treg [from]: the treg team token, from <from>'s captured secret (Vulcain)
+# or asked hidden, then wired into every profile.
+cmd_treg() {
+  local from=${1:-} token="" p
+  need_root treg
+  if [[ -n $from ]]; then
+    need_managed "$from"
+    token=$(pending "$from")
+    [[ -n $token ]] || die "$(t "no pending secret in $from: view the usine-secret skill first" \
+      "aucun secret en attente chez $from : ouvre d'abord le skill usine-secret")"
+    env_set "$from" USINE_PENDING_SECRET
+  else
+    secret token "$(t "treg team token (hidden):" "Token d'équipe treg (saisie masquée) :")"
+    [[ -n $token ]] || die "$(t "empty value, nothing changed" "valeur vide, rien n'a changé")"
+  fi
+  # printf is a builtin: the token never reaches a process argv.
+  printf '%s\n' "$token" | write_file 600 root:root "$TREG_FILE" secret
+  for p in $(profiles); do
+    wire_treg "$p"
+    run systemctl try-restart "$(unit_of "$p")"
+  done
+  t "✓ treg tools on for every profile." "✓ Outils treg activés pour chaque profil."
+}
+
 cmd_memory() {
   local from=$1 key p
   need_root memory
@@ -942,7 +982,7 @@ cmd_bridge() {
   check_name "$caller"
   need_managed "$caller"
   shift || true
-  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P] [--channel ID] | channel <name> <ID> | take-secret <name> <KEY> | allow <ids> | memory"
+  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P] [--channel ID] | channel <name> <ID> | take-secret <name> <KEY> | allow <ids> | memory | treg"
   case $action in
     list) [[ $# -eq 0 ]] || die "$usage" 2 ;;
     doctor)
@@ -987,7 +1027,7 @@ cmd_bridge() {
       [[ $# -eq 1 && -n $target ]] || die "$usage" 2
       check_value discord_allowed_users "$target"
       ;;
-    memory) [[ $# -eq 0 ]] || die "$usage" 2 ;;
+    memory | treg) [[ $# -eq 0 ]] || die "$usage" 2 ;;
     channel)
       check_name "$target"
       [[ $# -eq 2 ]] || die "$usage" 2
@@ -1007,7 +1047,7 @@ cmd_bridge() {
   need_root bridge
   run logger -t usine-hermes-bridge "caller=$caller action=$action target=${target:--}"
   # These read the secret the caller captured: the root side needs its name.
-  [[ $action != take-secret && $action != memory ]] || set -- "$caller" "$@"
+  [[ $action != take-secret && $action != memory && $action != treg ]] || set -- "$caller" "$@"
   run systemd-run --wait --pipe --quiet --collect "$BIN" "$action" "$@" </dev/null
 }
 
@@ -1077,7 +1117,8 @@ main() {
     create | start | stop | restart | status | logs | destroy | secret | model | channel) check_name "${1:-}" ;;&
     take-secret) check_name "${1:-}"; check_name "${2:-}" ;;&
     memory) check_name "${1:-}" ;;&
-    create | start | stop | restart | status | logs | destroy | secret | model | channel | take-secret | memory | allow | list | config | bootstrap | doctor | bridge)
+    treg) [[ -z ${1:-} ]] || check_name "$1" ;;&
+    create | start | stop | restart | status | logs | destroy | secret | model | channel | take-secret | memory | treg | allow | list | config | bootstrap | doctor | bridge)
       check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
@@ -1093,6 +1134,7 @@ main() {
     take-secret) cmd_take_secret "$1" "$2" "${3:-}" ;;
     allow) cmd_allow "${1:-}" ;;
     memory) cmd_memory "$1" ;;
+    treg) cmd_treg "${1:-}" ;;
     logs) cmd_logs "$@" ;;
     list) cmd_list ;;
     init) cmd_init ;;
