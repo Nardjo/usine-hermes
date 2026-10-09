@@ -160,7 +160,7 @@ hermes_version: v2026.9.24
 model_openrouter: z-ai/glm-5.2
 model_anthropic: claude-sonnet-4-6
 model_openai_api: gpt-6-sol
-model_openai_codex: gpt-6-sol
+model_openai_codex: gpt-5.6-terra
 model_xai: grok-4.6
 model_xai_oauth: grok-4.6
 model_gemini: gemini-3.8-flash
@@ -562,7 +562,7 @@ cmd_create() {
   # left empty are set afterwards with `usine-hermes secret`.
   local batch=0
   [[ -n $mission && ! -t 0 || -n $preset ]] && batch=1
-  [[ -n $preset ]] || provider=${provider:-openrouter}
+  [[ -n $preset ]] || provider=${provider:-openai-codex}
   [[ -z $provider || " $PROVIDERS " == *" $provider "* ]] || die "$(t "unknown provider: $provider" "fournisseur inconnu : $provider")" 2
   local key_name login=n key="" token=""
   key_name=$(key_var "$provider")
@@ -602,6 +602,8 @@ cmd_create() {
     as_profile "$name" hermes config set model.provider "$provider"
     as_profile "$name" hermes config set model.default "$(cfg "model_${provider//-/_}")"
   fi
+  # What /reasoning medium --global saves; --force: `config set` does not list it.
+  as_profile "$name" hermes config set --force agent.reasoning_effort medium
   [[ $(cfg honcho) != true ]] || wire_honcho "$name"
 
   # printf is a builtin: secrets never reach a process argv. No key line for

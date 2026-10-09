@@ -86,7 +86,7 @@ expect "init: memory off until enabled" 0 "^false$" -- uc config honcho
 expect "config reads home_root default" 0 "^/var/lib/usine-hermes$" -- uc config home_root
 expect "config reads pinned hermes_version" 0 "^v2026\.9\.24$" -- uc config hermes_version
 expect "config reads per-provider model" 0 "^z-ai/glm-5\.2$" -- uc config model_openrouter
-expect "config reads dashed provider model" 0 "^gpt-6-sol$" -- uc config model_openai_codex
+expect "config reads dashed provider model" 0 "^gpt-5\.6-terra$" -- uc config model_openai_codex
 expect "config reads peer_name default" 0 "^owner$" -- uc config peer_name
 expect "config reads honcho_url" 0 "^http://127\.0\.0\.1:8000$" -- uc config honcho_url
 expect "config unknown key fails" 1 "clé de config inconnue" -- uc config nope
@@ -164,11 +164,11 @@ if crf 2>&1 | grep -cE >/dev/null "systemctl (enable|start)"; then ko "create: n
 if crf 2>&1 | grep -cE >/dev/null "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
 expect "create: experimental Claude plugin gone" 2 "unknown provider" -- cr ab --provider claude-subscription-directsdk-experimental
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
-# Default create: two questions, shared OpenRouter key, starts when a token is given.
+# OpenRouter create: two questions, shared key, starts when a token is given.
 mkdir -p "$tmp/shared"; scfg="$tmp/shared/usine.yaml"
 cp "$root/usine.example.yaml" "$scfg"; echo sk-or-shared-secret >"$tmp/shared/openrouter.key"
-cs() { env USINE_LANG=fr USINE_CONFIG="$scfg" "$cli" create "$@" --dry-run; }
-cse() { env USINE_LANG=en USINE_CONFIG="$scfg" "$cli" create "$@" --dry-run; }
+cs() { env USINE_LANG=fr USINE_CONFIG="$scfg" "$cli" create "$1" --provider openrouter "${@:2}" --dry-run; }
+cse() { env USINE_LANG=en USINE_CONFIG="$scfg" "$cli" create "$1" --provider openrouter "${@:2}" --dry-run; }
 asked=$(cse alice 2>&1 >/dev/null <<<$'watch prices\n')
 if [[ $asked == "What should alice do? (one sentence): Discord bot token for alice (Enter = later): " ]]; then ok "create: English questions"; else ko "create: English questions: $asked"; fi
 expect "create: English start line" 0 "✓ alice created and started\. Mention @alice on Discord\." -- cse alice <<<$'w\ntok.alice.1234567890'
@@ -183,7 +183,14 @@ expect "create: asks the bot token (de)" 0 "Token du bot Discord de bob \(Entré
 # Prompts go to stderr: exactly these two, nothing else.
 asked=$(cs alice 2>&1 >/dev/null <<<$'watch prices\n')
 if [[ $asked == "Que doit faire alice ? (une phrase) : Token du bot Discord d'alice (Entrée = plus tard) : " ]]; then ok "create: only two questions"; else ko "create: only two questions: $asked"; fi
-expect "create: default provider openrouter" 0 "hermes config set model\.provider openrouter" -- cs alice <<<$'watch prices\n'
+# Default create: the ChatGPT subscription with terra, login offered as the profile.
+cd0() { env USINE_LANG=en USINE_CONFIG="$scfg" "$cli" create alice --dry-run; }
+expect "create: default provider ChatGPT" 0 "hermes config set model\.provider openai-codex$" -- cd0 <<<$'w\nn\n'
+expect "create: default model terra" 0 "hermes config set model\.default gpt-5\.6-terra$" -- cd0 <<<$'w\nn\n'
+asked=$(cd0 2>&1 >/dev/null <<<$'w\nn\n' | grep -oE "What should alice do\?|Log in now\? \[y/N\]|Discord bot token for alice" | paste -sd'|' -)
+if [[ $asked == "What should alice do?|Log in now? [y/N]|Discord bot token for alice" ]]; then ok "create: default asks mission, login, token"; else ko "create: default asks mission, login, token: $asked"; fi
+expect "create: default login as the profile on y" 0 "^\+ runuser -u alice -- .*hermes auth add openai-codex$" -- cd0 <<<$'w\ny\n'
+expect "create: reasoning medium as the profile" 0 "runuser -u alice -- .*hermes config set --force agent\.reasoning_effort medium$" -- cd0 <<<$'w\nn\n'
 expect "create: mission in SOUL.md" 0 "^\| watch prices$" -- cs alice <<<$'watch prices\n'
 expect "create: default personality in SOUL.md" 0 "^\| helpful, concise and friendly$" -- cs alice <<<$'watch prices\n'
 expect "create: token given: starts" 0 "systemctl enable --now usine-alice\.service" -- cs alice <<<$'watch prices\ntok.alice.1234567890'
@@ -195,7 +202,7 @@ expect "create: no token: one secret command (interactive)" 0 "^  sudo usine-her
 expect "create: non-token refused, re-asked" 0 "Ce n'est pas un token de bot" -- cs alice <<<$'w\nabcdefghijklmnopqrstuvwxyz0123456789\ntok.alice.1234567890'
 expect "create: valid token after retry starts" 0 "systemctl enable --now usine-alice\.service" -- cs alice <<<$'w\nabcdefghijklmnopqrstuvwxyz0123456789\ntok.alice.1234567890'
 if cs alice <<<$'w\n' 2>&1 | grep -c >/dev/null "secret alice OPENROUTER"; then ko "create: shared key, no key step"; else ok "create: shared key, no key step"; fi
-expect "create: no shared key: asks the OpenRouter key" 0 "OPENROUTER_API_KEY for ab \(hidden\):" -- cr ab <<<$'w\n'
+expect "create: no shared key: asks the OpenRouter key" 0 "OPENROUTER_API_KEY for ab \(hidden\):" -- cr ab --provider openrouter <<<$'w\n'
 expect "create: --provider asks that key" 0 "ANTHROPIC_API_KEY pour ab \(saisie masquée\) :" -- cs ab --provider anthropic <<<$'w\n'
 expect "create: --personality written" 0 "^\| dry wit$" -- cs ab --personality "dry wit" <<<$'w\n'
 # Subscription providers: warning, y/N login as the profile user, or a follow-up command.
@@ -356,7 +363,7 @@ mdf() { TL=fr md "$@"; }
 expect "model: French menu" 0 "1\) ChatGPT \(abonnement Codex\)" -- mdf delta ''
 expect "model: Enter = ChatGPT login as profile" 0 "^\+ runuser -u delta -- .*hermes auth add openai-codex$" -- md delta ''
 expect "model: provider set as profile" 0 "hermes config set model\.provider openai-codex" -- md delta ''
-expect "model: default model from config" 0 "hermes config set model\.default gpt-6-sol" -- md delta ''
+expect "model: default model from config" 0 "hermes config set model\.default gpt-5\.6-terra" -- md delta ''
 expect "model: registry updated" 0 "write $tmp/profiles/delta \(mode 644, owner root:root\)"$'\n'"\| provider=openai-codex$" -- md delta ''
 expect "model: restarts a running profile" 0 "systemctl restart usine-delta\.service" -- md delta ''
 if STOPPED=1 md delta '' 2>&1 | grep -c >/dev/null "systemctl restart"; then ko "model: stopped profile not restarted"; else ok "model: stopped profile not restarted"; fi

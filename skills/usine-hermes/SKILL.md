@@ -57,9 +57,9 @@ See below.
 
 ## Create a profile
 
-1. Ask: **name** (`^[a-z][a-z0-9-]{1,30}$`, not already in `list`) and **what it does** (one sentence, max 500 characters; single quotes around it; if the text has an apostrophe, double quotes and no `$`, backtick or backslash). Add `--personality '<text>'` (max 200) only if given. `--provider <id>` only if the human wants another model than OpenRouter: `anthropic openai-api openai-codex xai xai-oauth gemini deepseek`.
+1. Ask: **name** (`^[a-z][a-z0-9-]{1,30}$`, not already in `list`) and **what it does** (one sentence, max 500 characters; single quotes around it; if the text has an apostrophe, double quotes and no `$`, backtick or backslash). Add `--personality '<text>'` (max 200) only if given. The default is the ChatGPT subscription (`openai-codex`, `gpt-5.6-terra`); `--provider <id>` only if the human wants another one: `openrouter anthropic openai-api xai xai-oauth gemini deepseek`.
 2. Repeat the values and wait for an explicit yes. Run `create`.
-3. Its model key: capture it with `usine-secret`, then `take-secret <name> <KEY>` (`OPENROUTER_API_KEY` by default). With memory on, OpenRouter profiles already have the shared key. Subscriptions (`openai-codex`, `xai-oauth`): the human runs `sudo usine-hermes model <name>` in another terminal.
+3. Its model login: subscriptions (`openai-codex` by default, `xai-oauth`): the human runs `sudo usine-hermes model <name>` in another terminal and picks the same choice (1 for ChatGPT). API keys: capture it with `usine-secret`, then `take-secret <name> <KEY>`; with memory on, OpenRouter profiles already have the shared key.
 4. Its Discord bot: steps 1, 2, 4 and 5 of "Your Discord bot" for the new name, then `take-secret <name> DISCORD_BOT_TOKEN`: it starts.
 5. `doctor <name>`; on failure read `logs <name>`. Ask the human to mention the new bot. No answer: check the intents, the invite, and `allow`.
 
