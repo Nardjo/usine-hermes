@@ -494,6 +494,7 @@ expect "allow: bad ids refused" 2 "invalid discord_allowed_users" -- lc allow "1
 mem() { lc memory "$1" --dry-run; }
 expect "memory: key stored root 600" 0 "write $tmp/openrouter\.key \(mode 600, owner root:root\)" -- mem vul
 expect "memory: config honcho true" 0 "^\| honcho: true$" -- mem vul
+expect "memory: honcho true only after Honcho is healthy" 0 "wait up to 180s for: curl -fsS http://127\.0\.0\.1:8000/health"$'\n'"\+ write $lcfg" -- mem vul
 expect "memory: Docker + Honcho up" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- mem vul
 expect "memory: every profile wired" 0 "write $hr/delta/\.hermes/honcho\.json" -- mem vul
 expect "memory: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- mem vul

@@ -901,9 +901,11 @@ cmd_memory() {
   fi
   [[ -n $key || -r $KEY_FILE ]] || die "$(t "memory needs an OpenRouter key: capture it with the usine-secret skill first" \
     "la mémoire a besoin d'une clé OpenRouter : capture-la d'abord avec le skill usine-secret")"
-  cfg_set honcho true
   bootstrap_docker
   bootstrap_honcho
+  # Only once Honcho is healthy: a failed run leaves memory off (create keeps
+  # working), and a retry reuses the stored key.
+  cfg_set honcho true
   for p in $(profiles); do
     wire_honcho "$p"
     run systemctl try-restart "$(unit_of "$p")"
