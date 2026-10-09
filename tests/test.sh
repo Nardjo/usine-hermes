@@ -164,6 +164,10 @@ if crf 2>&1 | grep -cE >/dev/null "systemctl (enable|start)"; then ko "create: n
 if crf 2>&1 | grep -cE >/dev/null "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
 expect "create: experimental Claude plugin gone" 2 "unknown provider" -- cr ab --provider claude-subscription-directsdk-experimental
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
+# Its own channel: answers there without a mention, inline; mention elsewhere.
+expect "create: --channel: free-response channel in .env" 0 "^# \.env keys: DISCORD_FREE_RESPONSE_CHANNELS$" -- cr ab --mission m --channel 123456789012345678
+expect "create: --channel digits only" 2 "invalid channel" -- cr ab --mission m --channel general
+if cr ab --mission m 2>&1 | grep -c >/dev/null FREE_RESPONSE; then ko "create: no channel, no free-response line"; else ok "create: no channel, no free-response line"; fi
 # OpenRouter create: two questions, shared key, starts when a token is given.
 mkdir -p "$tmp/shared"; scfg="$tmp/shared/usine.yaml"
 cp "$root/usine.example.yaml" "$scfg"; echo sk-or-shared-secret >"$tmp/shared/openrouter.key"
@@ -440,6 +444,17 @@ expect "bridge: take-secret needs a key" 2 "usage" -- br take-secret delta
 expect "bridge: take-secret extra args refused" 2 "usage" -- br take-secret delta DISCORD_BOT_TOKEN x
 expect "bridge: take-secret bad name" 2 "invalid name" -- br take-secret Bad DISCORD_BOT_TOKEN
 expect "bridge: take-secret unmanaged target" 1 "not a managed profile" -- br take-secret stranger DISCORD_BOT_TOKEN
+expect "bridge: channel of another profile" 0 "usine-hermes channel delta 123456789012345678$" -- br channel delta 123456789012345678
+expect "bridge: channel of itself allowed" 0 "usine-hermes channel vul 123456789012345678$" -- br channel vul 123456789012345678
+expect "bridge: channel digits only" 2 "invalid channel" -- br channel delta general
+expect "bridge: channel needs an id" 2 "usage" -- br channel delta
+expect "bridge: create --channel passed through" 0 "usine-hermes create newbie --mission m --channel 123456789012345678$" -- bc --mission m --channel 123456789012345678
+expect "bridge: create --channel digits only" 2 "invalid channel" -- bc --mission m --channel '1;2'
+# channel: the profile's own Discord channel, applied by a restart.
+expect "channel: written to the profile .env" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY DISCORD_FREE_RESPONSE_CHANNELS$" -- lc channel delta 123456789012345678 --dry-run
+expect "channel: restarts it if running" 0 "systemctl try-restart usine-delta\.service" -- lc channel delta 123456789012345678 --dry-run
+expect "channel: digits only" 2 "invalid channel" -- lc channel delta general --dry-run
+expect "channel: unmanaged profile refused" 1 "not a managed profile" -- lc channel stranger 123456789012345678 --dry-run
 expect "bridge: allow ids" 0 "usine-hermes allow 123\\\\?,456$" -- br allow 123,456
 expect "bridge: allow rejects non-digits" 2 "invalid discord_allowed_users" -- br allow "1;2"
 expect "bridge: allow needs ids" 2 "usage" -- br allow

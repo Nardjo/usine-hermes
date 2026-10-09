@@ -26,12 +26,13 @@ Type it exactly like that: one command, no `;`, `&&`, `|`, `$(...)` or redirecti
 | `status <name>` / `logs <name> [-n N]` | state and redacted journal (N up to 1000) |
 | `doctor [name]` | full health and isolation check |
 | `restart <name>` / `start <name>` | `start` refuses an empty or reused Discord token |
-| `create <name> --mission '<text>' [--personality '<text>'] [--provider <id>]` | new profile, stopped until it gets its Discord token |
+| `create <name> --mission '<text>' [--personality '<text>'] [--provider <id>] [--channel <id>]` | new profile, stopped until it gets its Discord token |
+| `channel <name> <id>` | that profile's own Discord channel: it answers every message there, inline (no thread); elsewhere only on mention. Restarts it if it runs |
 | `take-secret <name> <KEY>` | moves the secret you just captured (skill `usine-secret`) into that profile; a Discord token starts it |
 | `allow <ids>` | Discord user ids (digits, commas) allowed to talk to every bot |
 | `memory` | turns Honcho memory on with the OpenRouter key you just captured; takes a few minutes |
 
-You cannot `destroy`, `stop`, or `restart`/`start`/`create` your own profile. When the human wants one of those, give them the `sudo usine-hermes ...` command to run in another terminal. The bridge caps the number of profiles (`max_profiles`); when it says the cap is reached, tell the human.
+You cannot `destroy`, `stop`, or `restart`/`start`/`create` your own profile (`take-secret` and `channel` on yourself are fine). When the human wants one of those, give them the `sudo usine-hermes ...` command to run in another terminal. The bridge caps the number of profiles (`max_profiles`); when it says the cap is reached, tell the human.
 
 ## Hard rule: secrets
 
@@ -45,9 +46,10 @@ Greet in two lines, then offer these one at a time; the human may skip any.
 1. <https://discord.com/developers/applications>, **New Application**, named `Vulcain`.
 2. **Bot** tab: enable **Message Content Intent** and **Server Members Intent**, save.
 3. Their Discord user id: Discord **Settings > Advanced > Developer Mode** on, right-click their name > **Copy User ID**. It is not secret: ask it in the chat, then `allow <id>`.
-4. **Bot** tab: **Reset Token**. Capture it with `usine-secret`, then `take-secret <your name> DISCORD_BOT_TOKEN`: you start on Discord.
-5. Invite link: `take-secret` prints it (computed from the token's application id). Give it to the human to add the bot to their server.
-6. Ask them to mention you in a channel.
+4. Your own channel (suggest creating one, for example `#vulcain`): right-click it > **Copy Channel ID**, then `channel <your name> <id>`. There you answer every message without a mention; elsewhere only when mentioned.
+5. **Bot** tab: **Reset Token**. Capture it with `usine-secret`, then `take-secret <your name> DISCORD_BOT_TOKEN`: you start on Discord.
+6. Invite link: `take-secret` prints it (computed from the token's application id). Give it to the human to add the bot to their server; a private channel also needs the bot (or its role) added to it.
+7. Ask them to write in your channel, without a mention.
 
 ### 2. Memory (optional)
 Honcho remembers across conversations. It needs an OpenRouter key (<https://openrouter.ai/keys>): capture it with `usine-secret`, then run `memory`.
@@ -57,11 +59,11 @@ See below.
 
 ## Create a profile
 
-1. Ask: **name** (`^[a-z][a-z0-9-]{1,30}$`, not already in `list`) and **what it does** (one sentence, max 500 characters; single quotes around it; if the text has an apostrophe, double quotes and no `$`, backtick or backslash). Add `--personality '<text>'` (max 200) only if given. The default is the ChatGPT subscription (`openai-codex`, `gpt-5.6-terra`); `--provider <id>` only if the human wants another one: `openrouter anthropic openai-api xai xai-oauth gemini deepseek`.
+1. Ask: **name** (`^[a-z][a-z0-9-]{1,30}$`, not already in `list`), **its Discord channel** (suggest one named after it; right-click > **Copy Channel ID**, passed as `--channel <id>`) and **what it does** (one sentence, max 500 characters; single quotes around it; if the text has an apostrophe, double quotes and no `$`, backtick or backslash). Add `--personality '<text>'` (max 200) only if given. The default is the ChatGPT subscription (`openai-codex`, `gpt-5.6-terra`); `--provider <id>` only if the human wants another one: `openrouter anthropic openai-api xai xai-oauth gemini deepseek`.
 2. Repeat the values and wait for an explicit yes. Run `create`.
 3. Its model login: subscriptions (`openai-codex` by default, `xai-oauth`): the human runs `sudo usine-hermes model <name>` in another terminal and picks the same choice (1 for ChatGPT). API keys: capture it with `usine-secret`, then `take-secret <name> <KEY>`; with memory on, OpenRouter profiles already have the shared key.
-4. Its Discord bot: steps 1, 2, 4 and 5 of "Your Discord bot" for the new name, then `take-secret <name> DISCORD_BOT_TOKEN`: it starts.
-5. `doctor <name>`; on failure read `logs <name>`. Ask the human to mention the new bot. No answer: check the intents, the invite, and `allow`.
+4. Its Discord bot: steps 1, 2, 5 and 6 of "Your Discord bot" for the new name, then `take-secret <name> DISCORD_BOT_TOKEN`: it starts.
+5. `doctor <name>`; on failure read `logs <name>`. Ask the human to write in its channel (no mention needed there; elsewhere a mention). No answer: check the intents, the invite, the bot's access to the channel, and `allow`. Forgot the channel at `create`: `channel <name> <id>`.
 
 ## Keep the farm running
 

@@ -18,8 +18,9 @@ Commandes :
   init                 demande la langue, écrit la config une fois
   config <clé>         affiche une valeur de config
   bootstrap            installe Hermes, Docker et Honcho (idempotent)
-  create <nom> [--mission T] [--personality T] [--provider P] [--preset vulcain]
+  create <nom> [--mission T] [--personality T] [--provider P] [--channel ID] [--preset vulcain]
                        crée un profil isolé ; le démarre si un token est donné
+  channel <nom> <ID>   salon Discord du profil : il y répond sans mention, hors thread
   secret <nom> [CLÉ]   définit le token Discord (puis démarre) ou une CLÉ (masquée)
   model <nom>          choisit le modèle : connexion à un abonnement ou clé API
   start <nom>          active et démarre un profil
@@ -45,8 +46,9 @@ Commands:
   init                 ask the language, write the config once
   config <key>         print one config value
   bootstrap            install Hermes, Docker and Honcho (idempotent)
-  create <name> [--mission T] [--personality T] [--provider P] [--preset vulcain]
+  create <name> [--mission T] [--personality T] [--provider P] [--channel ID] [--preset vulcain]
                        create an isolated profile; starts it if given a token
+  channel <name> <ID>  the profile's Discord channel: answers there without a mention, no thread
   secret <name> [KEY]  set the Discord token (then start) or one KEY (hidden)
   model <name>         pick the model: subscription login or API key
   start <name>         enable and start a profile
@@ -116,6 +118,7 @@ check_value() {
     peer_name) re='^[A-Za-z0-9_-]{1,64}$' ;;
     honcho_url) re='^(http://127\.0\.0\.1:[0-9]+|https?://[A-Za-z0-9.:-]+)$' ;;
     discord_allowed_users) re='^([0-9]+(,[0-9]+)*)?$' ;;
+    channel) re='^[0-9]{5,25}$' ;;
   esac
   [[ $2 =~ $re ]] || die "$(t "invalid $1: '$2' (must match $re)" "$1 invalide : '$2' (doit correspondre à $re)")" 2
   [[ $1 != home_root || /$2/ != */../* ]] || die "$(t "invalid home_root: '$2' (no ..)" "home_root invalide : '$2' (pas de ..)")" 2
@@ -532,11 +535,11 @@ wire_honcho() {
 }
 
 cmd_create() {
-  local name=$1 label=$1 personality="" mission="" provider="" preset="" home hermes_home unit
+  local name=$1 label=$1 personality="" mission="" provider="" preset="" channel="" home hermes_home unit
   shift
   while [[ $# -gt 0 ]]; do
     case $1 in
-      --personality | --mission | --provider | --preset)
+      --personality | --mission | --provider | --preset | --channel)
         [[ $# -ge 2 ]] || die "$(t "$1 needs a value" "$1 attend une valeur")" 2
         printf -v "${1#--}" '%s' "$2"
         shift 2
@@ -550,6 +553,7 @@ cmd_create() {
     vulcain) personality=preset mission=preset label=Vulcain ;; # model chosen in the chat
     *) die "$(t "unknown preset: $preset (only: vulcain)" "preset inconnu : $preset (seul : vulcain)")" 2 ;;
   esac
+  [[ -z $channel ]] || check_value channel "$channel"
   need_root create
   home=$(home_of "$name") hermes_home=$(home_of "$name")/.hermes unit=$(unit_of "$name")
   [[ ! -f $REGISTRY/$name ]] ||
@@ -612,6 +616,9 @@ cmd_create() {
     printf 'DISCORD_BOT_TOKEN=%s\nDISCORD_ALLOWED_USERS=%s\nDISCORD_REQUIRE_MENTION=true\n' \
       "$token" "$(cfg discord_allowed_users)"; } |
     write_file 600 "$name:$name" "$hermes_home/.env" secret
+  # Its own channel: every message there, answered inline (Hermes does not
+  # auto-thread free-response channels); elsewhere, mention only.
+  [[ -z $channel ]] || env_set "$name" DISCORD_FREE_RESPONSE_CHANNELS "$channel"
 
   render "$name" usine.service | write_file 644 root:root "/etc/systemd/system/$unit"
   run install -d -m 755 "/etc/systemd/system/$unit.d"
@@ -771,6 +778,18 @@ cfg_set() {
   printf '%s\n' "$new" | write_file 644 root:root "$CONFIG"
 }
 
+# channel <name> <id>: the profile's own Discord channel (no mention needed
+# there, inline replies), applied by a restart if it runs.
+cmd_channel() {
+  local name=$1 id=${2:-}
+  need_root channel
+  need_managed "$name"
+  check_value channel "$id"
+  env_set "$name" DISCORD_FREE_RESPONSE_CHANNELS "$id"
+  run systemctl try-restart "$(unit_of "$name")"
+  t "✓ $name answers without a mention in channel $id." "✓ $name répond sans mention dans le salon $id."
+}
+
 # allow <ids>: who may talk to every bot, in the config and every .env.
 cmd_allow() {
   local ids=$1 p
@@ -921,7 +940,7 @@ cmd_bridge() {
   check_name "$caller"
   need_managed "$caller"
   shift || true
-  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P] | take-secret <name> <KEY> | allow <ids> | memory"
+  usage="bridge: usage: list | doctor [name] | status|start|restart <name> | logs <name> [-n N<=1000] | create <name> --mission T [--personality T] [--provider P] [--channel ID] | channel <name> <ID> | take-secret <name> <KEY> | allow <ids> | memory"
   case $action in
     list) [[ $# -eq 0 ]] || die "$usage" 2 ;;
     doctor)
@@ -948,6 +967,7 @@ cmd_bridge() {
           --personality) ((${#value} <= 200)) || die "bridge: personality too long (max 200)" 2 ;;
           --mission) ((${#value} <= 500)) || die "bridge: mission too long (max 500)" 2 ;;
           --provider) [[ " $PROVIDERS " == *" $value "* ]] || die "unknown provider: $value" 2 ;;
+          --channel) check_value channel "$value" ;;
           *) die "$usage" 2 ;;
         esac
         [[ $value != *[[:cntrl:]]* ]] || die "bridge: control characters in $flag" 2
@@ -966,10 +986,15 @@ cmd_bridge() {
       check_value discord_allowed_users "$target"
       ;;
     memory) [[ $# -eq 0 ]] || die "$usage" 2 ;;
+    channel)
+      check_name "$target"
+      [[ $# -eq 2 ]] || die "$usage" 2
+      check_value channel "$2"
+      ;;
     *) die "bridge: '$action' not allowed ($usage)" 2 ;;
   esac
-  # Its own Discord token is the one secret Vulcain sets on itself.
-  [[ $target != "$caller" || $action == status || $action == logs || $action == take-secret ]] ||
+  # Its own Discord token and channel are what Vulcain sets on itself.
+  [[ $target != "$caller" || $action == status || $action == logs || $action == take-secret || $action == channel ]] ||
     die "bridge: $action on its own profile is not allowed" 2
   if [[ $action == create ]]; then
     local max
@@ -1047,10 +1072,10 @@ main() {
   case $cmd in
     help | -h | --help) usage ;;
     chat) check_config; cmd_chat ;;
-    create | start | stop | restart | status | logs | destroy | secret | model) check_name "${1:-}" ;;&
+    create | start | stop | restart | status | logs | destroy | secret | model | channel) check_name "${1:-}" ;;&
     take-secret) check_name "${1:-}"; check_name "${2:-}" ;;&
     memory) check_name "${1:-}" ;;&
-    create | start | stop | restart | status | logs | destroy | secret | model | take-secret | memory | allow | list | config | bootstrap | doctor | bridge)
+    create | start | stop | restart | status | logs | destroy | secret | model | channel | take-secret | memory | allow | list | config | bootstrap | doctor | bridge)
       check_config ;;&
     create) cmd_create "$@" ;;
     start) cmd_start "$1" ;;
@@ -1062,6 +1087,7 @@ main() {
     status) cmd_status "$1" ;;
     secret) cmd_secret "$@" ;;
     model) cmd_model "$1" ;;
+    channel) cmd_channel "$1" "${2:-}" ;;
     take-secret) cmd_take_secret "$1" "$2" "${3:-}" ;;
     allow) cmd_allow "${1:-}" ;;
     memory) cmd_memory "$1" ;;
