@@ -13,7 +13,7 @@ hermes_version: v2026.9.24
 model_openrouter: z-ai/glm-5.2
 model_anthropic: claude-sonnet-4-6
 model_openai_api: gpt-6-sol
-model_openai_codex: gpt-6-sol
+model_openai_codex: gpt-5.6-terra
 model_xai: grok-4.6
 model_xai_oauth: grok-4.6
 model_gemini: gemini-3.8-flash

@@ -86,7 +86,7 @@ expect "init: memory off until enabled" 0 "^false$" -- uc config honcho
 expect "config reads home_root default" 0 "^/var/lib/usine-hermes$" -- uc config home_root
 expect "config reads pinned hermes_version" 0 "^v2026\.9\.24$" -- uc config hermes_version
 expect "config reads per-provider model" 0 "^z-ai/glm-5\.2$" -- uc config model_openrouter
-expect "config reads dashed provider model" 0 "^gpt-6-sol$" -- uc config model_openai_codex
+expect "config reads dashed provider model" 0 "^gpt-5\.6-terra$" -- uc config model_openai_codex
 expect "config reads peer_name default" 0 "^owner$" -- uc config peer_name
 expect "config reads honcho_url" 0 "^http://127\.0\.0\.1:8000$" -- uc config honcho_url
 expect "config unknown key fails" 1 "clé de config inconnue" -- uc config nope
@@ -124,6 +124,9 @@ expect "bootstrap: skip when at pinned sha" 0 \
   "skip.*/usr/local/lib/hermes-agent.*at <sha-of-v2026\.9\.24>" -- bs
 expect "bootstrap: pre-bakes Discord + Honcho deps" 0 \
   "uv sync --extra all --extra messaging --extra honcho --locked" -- bs
+expect "bootstrap: Lightpanda pinned release" 0 "curl -fsSL -o /tmp/lightpanda\.download https://github\.com/lightpanda-io/browser/releases/download/1\.0\.0/lightpanda-x86_64-linux$" -- bs
+expect "bootstrap: Lightpanda sha256 checked" 0 "^# check sha256 aa5a4b8ed53d1e38b3c73f5b2647d0a84a82e6744557f45f9a9c85858aa031c3$" -- bs
+expect "bootstrap: Lightpanda shared binary" 0 "install -m 755 /tmp/lightpanda\.download /usr/local/bin/lightpanda$" -- bs
 expect "bootstrap: shared install root-owned" 0 "chown -R root:root /usr/local/lib/hermes-agent" -- bs
 expect "bootstrap: shared install not writable by others" 0 "chmod -R go-w /usr/local/lib/hermes-agent" -- bs
 if [[ $EUID -ne 0 ]]; then
@@ -164,11 +167,15 @@ if crf 2>&1 | grep -cE >/dev/null "systemctl (enable|start)"; then ko "create: n
 if crf 2>&1 | grep -cE >/dev/null "^\| .*(DISCORD_BOT_TOKEN|API_KEY)"; then ko "create: .env content not printed"; else ok "create: .env content not printed"; fi
 expect "create: experimental Claude plugin gone" 2 "unknown provider" -- cr ab --provider claude-subscription-directsdk-experimental
 expect "create: unknown provider rejected" 2 "unknown provider" -- cr ab --provider nope
-# Default create: two questions, shared OpenRouter key, starts when a token is given.
+# Its own channel: answers there without a mention, inline; mention elsewhere.
+expect "create: --channel: free-response channel in .env" 0 "^# \.env keys: DISCORD_FREE_RESPONSE_CHANNELS$" -- cr ab --mission m --channel 123456789012345678
+expect "create: --channel digits only" 2 "invalid channel" -- cr ab --mission m --channel general
+if cr ab --mission m 2>&1 | grep -c >/dev/null FREE_RESPONSE; then ko "create: no channel, no free-response line"; else ok "create: no channel, no free-response line"; fi
+# OpenRouter create: two questions, shared key, starts when a token is given.
 mkdir -p "$tmp/shared"; scfg="$tmp/shared/usine.yaml"
 cp "$root/usine.example.yaml" "$scfg"; echo sk-or-shared-secret >"$tmp/shared/openrouter.key"
-cs() { env USINE_LANG=fr USINE_CONFIG="$scfg" "$cli" create "$@" --dry-run; }
-cse() { env USINE_LANG=en USINE_CONFIG="$scfg" "$cli" create "$@" --dry-run; }
+cs() { env USINE_LANG=fr USINE_CONFIG="$scfg" "$cli" create "$1" --provider openrouter "${@:2}" --dry-run; }
+cse() { env USINE_LANG=en USINE_CONFIG="$scfg" "$cli" create "$1" --provider openrouter "${@:2}" --dry-run; }
 asked=$(cse alice 2>&1 >/dev/null <<<$'watch prices\n')
 if [[ $asked == "What should alice do? (one sentence): Discord bot token for alice (Enter = later): " ]]; then ok "create: English questions"; else ko "create: English questions: $asked"; fi
 expect "create: English start line" 0 "✓ alice created and started\. Mention @alice on Discord\." -- cse alice <<<$'w\ntok.alice.1234567890'
@@ -183,7 +190,18 @@ expect "create: asks the bot token (de)" 0 "Token du bot Discord de bob \(Entré
 # Prompts go to stderr: exactly these two, nothing else.
 asked=$(cs alice 2>&1 >/dev/null <<<$'watch prices\n')
 if [[ $asked == "Que doit faire alice ? (une phrase) : Token du bot Discord d'alice (Entrée = plus tard) : " ]]; then ok "create: only two questions"; else ko "create: only two questions: $asked"; fi
-expect "create: default provider openrouter" 0 "hermes config set model\.provider openrouter" -- cs alice <<<$'watch prices\n'
+# Default create: the ChatGPT subscription with terra, login offered as the profile.
+cd0() { env USINE_LANG=en USINE_CONFIG="$scfg" "$cli" create alice --dry-run; }
+expect "create: default provider ChatGPT" 0 "hermes config set model\.provider openai-codex$" -- cd0 <<<$'w\nn\n'
+expect "create: default model terra" 0 "hermes config set model\.default gpt-5\.6-terra$" -- cd0 <<<$'w\nn\n'
+asked=$(cd0 2>&1 >/dev/null <<<$'w\nn\n' | grep -oE "What should alice do\?|Log in now\? \[y/N\]|Discord bot token for alice" | paste -sd'|' -)
+if [[ $asked == "What should alice do?|Log in now? [y/N]|Discord bot token for alice" ]]; then ok "create: default asks mission, login, token"; else ko "create: default asks mission, login, token: $asked"; fi
+expect "create: default login as the profile on y" 0 "^\+ runuser -u alice -- .*hermes auth add openai-codex$" -- cd0 <<<$'w\ny\n'
+expect "create: Lightpanda MCP as the profile" 0 "runuser -u alice -- .*hermes config set --force mcp_servers\.lightpanda\.command /usr/local/bin/lightpanda$" -- cd0 <<<$'w\nn\n'
+expect "create: Lightpanda MCP over stdio" 0 'mcp_servers\.lightpanda\.args \\?\[\\?"mcp\\?"\\?\]$' -- cd0 <<<$'w\nn\n'
+expect "create: Lightpanda telemetry off" 0 "mcp_servers\.lightpanda\.env\.LIGHTPANDA_DISABLE_TELEMETRY .{0,2}\"true.{0,3}$" -- cd0 <<<$'w\nn\n'
+expect "create: tool calls hidden as the profile" 0 "runuser -u alice -- .*hermes config set --force display\.tool_progress off$" -- cd0 <<<$'w\nn\n'
+expect "create: reasoning medium as the profile" 0 "runuser -u alice -- .*hermes config set --force agent\.reasoning_effort medium$" -- cd0 <<<$'w\nn\n'
 expect "create: mission in SOUL.md" 0 "^\| watch prices$" -- cs alice <<<$'watch prices\n'
 expect "create: default personality in SOUL.md" 0 "^\| helpful, concise and friendly$" -- cs alice <<<$'watch prices\n'
 expect "create: token given: starts" 0 "systemctl enable --now usine-alice\.service" -- cs alice <<<$'watch prices\ntok.alice.1234567890'
@@ -195,7 +213,7 @@ expect "create: no token: one secret command (interactive)" 0 "^  sudo usine-her
 expect "create: non-token refused, re-asked" 0 "Ce n'est pas un token de bot" -- cs alice <<<$'w\nabcdefghijklmnopqrstuvwxyz0123456789\ntok.alice.1234567890'
 expect "create: valid token after retry starts" 0 "systemctl enable --now usine-alice\.service" -- cs alice <<<$'w\nabcdefghijklmnopqrstuvwxyz0123456789\ntok.alice.1234567890'
 if cs alice <<<$'w\n' 2>&1 | grep -c >/dev/null "secret alice OPENROUTER"; then ko "create: shared key, no key step"; else ok "create: shared key, no key step"; fi
-expect "create: no shared key: asks the OpenRouter key" 0 "OPENROUTER_API_KEY for ab \(hidden\):" -- cr ab <<<$'w\n'
+expect "create: no shared key: asks the OpenRouter key" 0 "OPENROUTER_API_KEY for ab \(hidden\):" -- cr ab --provider openrouter <<<$'w\n'
 expect "create: --provider asks that key" 0 "ANTHROPIC_API_KEY pour ab \(saisie masquée\) :" -- cs ab --provider anthropic <<<$'w\n'
 expect "create: --personality written" 0 "^\| dry wit$" -- cs ab --personality "dry wit" <<<$'w\n'
 # Subscription providers: warning, y/N login as the profile user, or a follow-up command.
@@ -356,7 +374,7 @@ mdf() { TL=fr md "$@"; }
 expect "model: French menu" 0 "1\) ChatGPT \(abonnement Codex\)" -- mdf delta ''
 expect "model: Enter = ChatGPT login as profile" 0 "^\+ runuser -u delta -- .*hermes auth add openai-codex$" -- md delta ''
 expect "model: provider set as profile" 0 "hermes config set model\.provider openai-codex" -- md delta ''
-expect "model: default model from config" 0 "hermes config set model\.default gpt-6-sol" -- md delta ''
+expect "model: default model from config" 0 "hermes config set model\.default gpt-5\.6-terra" -- md delta ''
 expect "model: registry updated" 0 "write $tmp/profiles/delta \(mode 644, owner root:root\)"$'\n'"\| provider=openai-codex$" -- md delta ''
 expect "model: restarts a running profile" 0 "systemctl restart usine-delta\.service" -- md delta ''
 if STOPPED=1 md delta '' 2>&1 | grep -c >/dev/null "systemctl restart"; then ko "model: stopped profile not restarted"; else ok "model: stopped profile not restarted"; fi
@@ -433,6 +451,19 @@ expect "bridge: take-secret needs a key" 2 "usage" -- br take-secret delta
 expect "bridge: take-secret extra args refused" 2 "usage" -- br take-secret delta DISCORD_BOT_TOKEN x
 expect "bridge: take-secret bad name" 2 "invalid name" -- br take-secret Bad DISCORD_BOT_TOKEN
 expect "bridge: take-secret unmanaged target" 1 "not a managed profile" -- br take-secret stranger DISCORD_BOT_TOKEN
+expect "bridge: channel of another profile" 0 "usine-hermes channel delta 123456789012345678 vul$" -- br channel delta 123456789012345678
+expect "bridge: channel of itself allowed, caller last" 0 "usine-hermes channel vul 123456789012345678 vul$" -- br channel vul 123456789012345678
+expect "bridge: channel digits only" 2 "invalid channel" -- br channel delta general
+expect "bridge: channel needs an id" 2 "usage" -- br channel delta
+expect "bridge: create --channel passed through" 0 "usine-hermes create newbie --mission m --channel 123456789012345678$" -- bc --mission m --channel 123456789012345678
+expect "bridge: create --channel digits only" 2 "invalid channel" -- bc --mission m --channel '1;2'
+# channel: the profile's own Discord channel, applied by a restart.
+expect "channel: written to the profile .env" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY DISCORD_FREE_RESPONSE_CHANNELS$" -- lc channel delta 123456789012345678 --dry-run
+expect "channel: restarts it if running" 0 "systemctl try-restart usine-delta\.service" -- lc channel delta 123456789012345678 --dry-run
+expect "channel: digits only" 2 "invalid channel" -- lc channel delta general --dry-run
+expect "channel: the caller is only told to restart" 0 "delta tourne : applique avec sudo usine-hermes restart delta|delta is running: apply with sudo usine-hermes restart delta" -- lc channel delta 123456789012345678 delta --dry-run
+if lc channel delta 123456789012345678 delta --dry-run 2>&1 | grep -c >/dev/null "try-restart"; then ko "channel: never restarts the caller"; else ok "channel: never restarts the caller"; fi
+expect "channel: unmanaged profile refused" 1 "not a managed profile" -- lc channel stranger 123456789012345678 --dry-run
 expect "bridge: allow ids" 0 "usine-hermes allow 123\\\\?,456$" -- br allow 123,456
 expect "bridge: allow rejects non-digits" 2 "invalid discord_allowed_users" -- br allow "1;2"
 expect "bridge: allow needs ids" 2 "usage" -- br allow
@@ -465,11 +496,30 @@ expect "allow: bad ids refused" 2 "invalid discord_allowed_users" -- lc allow "1
 mem() { lc memory "$1" --dry-run; }
 expect "memory: key stored root 600" 0 "write $tmp/openrouter\.key \(mode 600, owner root:root\)" -- mem vul
 expect "memory: config honcho true" 0 "^\| honcho: true$" -- mem vul
+expect "memory: honcho true only after Honcho is healthy" 0 "wait up to 180s for: curl -fsS http://127\.0\.0\.1:8000/health"$'\n'"\+ write $lcfg" -- mem vul
 expect "memory: Docker + Honcho up" 0 "docker compose -f /opt/usine-hermes/honcho/docker-compose\.yml up -d" -- mem vul
 expect "memory: every profile wired" 0 "write $hr/delta/\.hermes/honcho\.json" -- mem vul
 expect "memory: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- mem vul
 if mem vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "memory: key never printed"; else ok "memory: key never printed"; fi
 expect "memory: needs a captured key" 1 "OpenRouter key" -- mem delta
+# treg: the team token (captured by Vulcain, or asked hidden), MCP in every profile.
+tr() { lc treg "$@" --dry-run; }
+expect "bridge: treg runs with the caller" 0 "usine-hermes treg vul$" -- br treg
+expect "bridge: treg takes nothing" 2 "usage" -- br treg delta
+expect "treg: token stored root 600" 0 "write $tmp/treg\.token \(mode 600, owner root:root\)" -- tr vul
+expect "treg: token in every .env" 0 "^# \.env keys: DISCORD_BOT_TOKEN OPENROUTER_API_KEY MCP_TREG_API_KEY$" -- tr vul
+expect "treg: MCP url as the profile" 0 "runuser -u delta -- .*hermes config set --force mcp_servers\.treg\.url https://treg\.to/mcp/$" -- tr vul
+expect "treg: bearer header from the .env" 0 'mcp_servers\.treg\.headers\.Authorization Bearer\\? \\?\$\\?\{MCP_TREG_API_KEY\\?\}$' -- tr vul
+expect "treg: running profiles restarted" 0 "systemctl try-restart usine-delta\.service" -- tr vul
+if tr vul 2>&1 | grep -c >/dev/null "sk-pending"; then ko "treg: token never printed"; else ok "treg: token never printed"; fi
+expect "treg: needs a captured token" 1 "no pending secret" -- tr delta
+expect "treg: asks it hidden from a shell" 0 "treg team token \(hidden\):" -- env USINE_LANG=en USINE_CONFIG="$lcfg" PATH="$tmp/stub:$PATH" "$cli" treg --dry-run <<<treg-secret-token
+expect "treg: empty token refused" 1 "empty" -- lc treg --dry-run </dev/null
+if cr ab --mission m 2>&1 | grep -c >/dev/null mcp_servers\.treg; then ko "create: no treg token, no MCP"; else ok "create: no treg token, no MCP"; fi
+echo treg-secret-token >"$tmp/ex/treg.token"
+expect "create: treg wired when the token exists" 0 "runuser -u ab -- .*mcp_servers\.treg\.url https://treg\.to/mcp/$" -- cr ab --mission m
+if cr ab --mission m 2>&1 | grep -c >/dev/null "treg-secret"; then ko "create: treg token never printed"; else ok "create: treg token never printed"; fi
+rm -f "$tmp/ex/treg.token"
 if "$cli" help | grep -c >/dev/null bridge; then ko "bridge: hidden from help"; else ok "bridge: hidden from help"; fi
 expect "config reads max_profiles" 0 "^10$" -- env USINE_CONFIG="$root/usine.example.yaml" "$cli" config max_profiles
 
